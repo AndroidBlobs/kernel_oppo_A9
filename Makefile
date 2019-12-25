@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 4
 PATCHLEVEL = 14
-SUBLEVEL = 83
+SUBLEVEL = 98
 EXTRAVERSION =
 NAME = Petit Gorille
 
@@ -438,6 +438,99 @@ KBUILD_CFLAGS_MODULE  := -DMODULE
 KBUILD_LDFLAGS_MODULE := -T $(srctree)/scripts/module-common.lds
 GCC_PLUGINS_CFLAGS :=
 
+#ifdef VENDOR_EDIT
+#Bin.Yan@PSW.AD.BuildConfig.BaseConfig.1068615, 2017/08/28,Add for disallow system remount
+ifneq ($(SPECIAL_OPPO_CONFIG),1)
+    ifneq ($(filter release,$(OPPO_BUILD_TYPE)),)
+        ifneq ($(OPPO_ALLOW_KEY_INTERFACES),true)
+            ifeq ($(filter allnetcttest allnetcmcctest allnetcmccfield allnetctfield,$(NET_BUILD_TYPE)),)
+                KBUILD_CFLAGS += -DOPPO_DISALLOW_KEY_INTERFACES
+            endif
+        endif
+    endif
+endif
+#endif /* VENDOR_EDIT */
+
+#ifdef VENDOR_EDIT
+#Haiping.Zhong@PSW.AD.BuildConfig.BaseConfig.0, 2019/01/08, Add for build root disable dm verity
+ifeq ($(OPPO_BUILD_ROOT_DISABLE_DM_VERITY),true)
+    KBUILD_CFLAGS += -DOPPO_BUILD_ROOT_DISABLE_DM_VERITY
+endif
+#endif /* VENDOR_EDIT */
+
+
+
+# ifdef VENDOR_EDIT
+# jiangyg@OnlineRd.PM, 2013/10/15, add enviroment variant
+KBUILD_CFLAGS +=   -DVENDOR_EDIT
+KBUILD_CPPFLAGS += -DVENDOR_EDIT
+CFLAGS_KERNEL +=   -DVENDOR_EDIT
+CFLAGS_MODULE +=   -DVENDOR_EDIT
+#Added by guanling.yang@SCM.ROM，2015-11-23 add for disable fastboot modem at release soft
+#ifneq ($(filter release cts cta,$(OPPO_BUILD_TYPE)),)
+  #CFLAGS_KERNEL += -DDISABLE_FASTBOOT_CMDS=1
+#endif
+#Hui.Fan@BSP.Kernel.Security, 2017-02-12
+#Obscure the cpu model number in confidential version
+ifeq ($(CONFIDENTIAL_VERSION),1)
+KBUILD_CFLAGS += -DCONFIG_CONFIDENTIAL_VERSION
+endif
+ifneq ($(SPECIAL_OPPO_CONFIG),1)
+ifeq ($(filter release cts,$(OPPO_BUILD_TYPE)),)
+ifeq ($(filter cmcctest cmccfield allnetcttest,$(NET_BUILD_TYPE)),)
+KBUILD_CFLAGS += -DCONFIG_OPPO_DAILY_BUILD
+endif
+endif
+endif
+
+#ifdef VENDOR_EDIT//Kun.Zhang@PSW.BSP.CHG,add 2019/06/03  for  high/low temp aging test
+ifeq ($(OPPO_HIGH_TEMP_VERSION),true)
+$(warning OPPO_HIGH_TEMP_VERSION=true)
+KBUILD_CFLAGS += -DCONFIG_HIGH_TEMP_VERSION
+endif
+#endif /* VENDOR_EDIT */
+
+ifeq ($(SPECIAL_OPPO_CONFIG),1)
+KBUILD_CFLAGS += -DCONFIG_OPPO_SPECIAL_BUILD
+KBUILD_CFLAGS += -DOPPO_AGING_BUILD
+endif
+
+ifeq ($(NET_BUILD_TYPE),cmcctest)
+KBUILD_CFLAGS += -DOPPO_CMCC_TEST
+endif
+ifeq ($(NET_BUILD_TYPE),cmccfield)
+KBUILD_CFLAGS += -DOPPO_CMCC_TEST
+endif
+ifeq ($(NET_BUILD_TYPE),cmcc)
+KBUILD_CFLAGS += -DOPPO_CMCC_MP
+endif
+ifeq ($(NET_BUILD_TYPE),cutest)
+KBUILD_CFLAGS += -DOPPO_CU_TEST
+endif
+ifeq ($(NET_BUILD_TYPE),cu)
+KBUILD_CFLAGS += -DOPPO_CU_CLIENT
+endif
+ifeq ($(NET_BUILD_TYPE),cmcctest_dm)
+KBUILD_CFLAGS += -DOPPO_CMCC_TEST
+endif
+ifeq ($(OPPO_BUILD_TYPE),cta)
+KBUILD_CFLAGS += -DOPPO_CTA_FLAG
+KBUILD_CPPFLAGS += -DOPPO_CTA_FLAG
+endif
+#endif /*VENDOR_EDIT*/
+
+#ifdef  VENDOR_EDIT
+#ye.zhang@Sensor.config,2016-09-09, add for CTSI support external storage or not
+$(info @@@@@@@@@@@ 111 OPPO_BUILD_CUSTOMIZE is $(OPPO_BUILD_CUSTOMIZE))
+ifneq ($(OPPO_BUILD_CUSTOMIZE),)
+$(info @@@@@@@@@@@ 222 OPPO_BUILD_CUSTOMIZE is $(OPPO_BUILD_CUSTOMIZE))
+KBUILD_CFLAGS += -DMOUNT_EXSTORAGE_IF
+KBUILD_CPPFLAGS += -DMOUNT_EXSTORAGE_IF
+CFLAGS_KERNEL += -DMOUNT_EXSTORAGE_IF
+CFLAGS_MODULE += -DMOUNT_EXSTORAGE_IF
+endif
+#endif//VENDOR_EDIT
+
 export ARCH SRCARCH CONFIG_SHELL HOSTCC HOSTCFLAGS CROSS_COMPILE AS LD CC
 export CPP AR NM STRIP OBJCOPY OBJDUMP HOSTLDFLAGS HOST_LOADLIBES
 export MAKE AWK GENKSYMS INSTALLKERNEL PERL PYTHON UTS_MACHINE
@@ -490,16 +583,18 @@ endif
 ifeq ($(cc-name),clang)
 ifneq ($(CROSS_COMPILE),)
 CLANG_TRIPLE	?= $(CROSS_COMPILE)
-CLANG_TARGET	:= --target=$(notdir $(CLANG_TRIPLE:%-=%))
-GCC_TOOLCHAIN	:= $(realpath $(dir $(shell which $(LD)))/..)
+CLANG_FLAGS	:= --target=$(notdir $(CLANG_TRIPLE:%-=%))
+GCC_TOOLCHAIN_DIR := $(dir $(shell which $(LD)))
+CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)
+GCC_TOOLCHAIN	:= $(realpath $(GCC_TOOLCHAIN_DIR)/..)
 endif
 ifneq ($(GCC_TOOLCHAIN),)
-CLANG_GCC_TC	:= --gcc-toolchain=$(GCC_TOOLCHAIN)
+CLANG_FLAGS	+= --gcc-toolchain=$(GCC_TOOLCHAIN)
 endif
-KBUILD_CFLAGS += $(CLANG_TARGET) $(CLANG_GCC_TC)
-KBUILD_AFLAGS += $(CLANG_TARGET) $(CLANG_GCC_TC)
-KBUILD_CFLAGS += $(call cc-option, -no-integrated-as)
-KBUILD_AFLAGS += $(call cc-option, -no-integrated-as)
+CLANG_FLAGS	+= -no-integrated-as
+KBUILD_CFLAGS	+= $(CLANG_FLAGS)
+KBUILD_AFLAGS	+= $(CLANG_FLAGS)
+export CLANG_FLAGS
 endif
 
 RETPOLINE_CFLAGS_GCC := -mindirect-branch=thunk-extern -mindirect-branch-register
@@ -739,24 +834,11 @@ endif
 KBUILD_CFLAGS += $(stackp-flag)
 
 ifeq ($(cc-name),clang)
-ifneq ($(CROSS_COMPILE),)
-CLANG_TRIPLE	?= $(CROSS_COMPILE)
-CLANG_TARGET	:= --target=$(notdir $(CLANG_TRIPLE:%-=%))
-GCC_TOOLCHAIN	:= $(realpath $(dir $(shell which $(LD)))/..)
-endif
-ifneq ($(GCC_TOOLCHAIN),)
-CLANG_GCC_TC	:= --gcc-toolchain=$(GCC_TOOLCHAIN)
-endif
-KBUILD_CFLAGS += $(CLANG_TARGET) $(CLANG_GCC_TC) -meabi gnu
-KBUILD_AFLAGS += $(CLANG_TARGET) $(CLANG_GCC_TC)
 KBUILD_CPPFLAGS += $(call cc-option,-Qunused-arguments,)
 KBUILD_CFLAGS += $(call cc-disable-warning, format-invalid-specifier)
 KBUILD_CFLAGS += $(call cc-disable-warning, gnu)
 KBUILD_CFLAGS += $(call cc-disable-warning, address-of-packed-member)
 KBUILD_CFLAGS += $(call cc-disable-warning, duplicate-decl-specifier)
-
-KBUILD_CFLAGS += -Wno-asm-operand-widths
-KBUILD_CFLAGS += -Wno-initializer-overrides
 KBUILD_CFLAGS += -fno-builtin
 KBUILD_CFLAGS += $(call cc-option, -Wno-undefined-optimized)
 KBUILD_CFLAGS += $(call cc-option, -Wno-tautological-constant-out-of-range-compare)
@@ -896,6 +978,9 @@ KBUILD_CFLAGS += $(call cc-option,-Wdeclaration-after-statement,)
 
 # disable pointer signed / unsigned warnings in gcc 4.0
 KBUILD_CFLAGS += $(call cc-disable-warning, pointer-sign)
+
+# disable stringop warnings in gcc 8+
+KBUILD_CFLAGS += $(call cc-disable-warning, stringop-truncation)
 
 # disable invalid "can't wrap" optimizations for signed / pointers
 KBUILD_CFLAGS	+= $(call cc-option,-fno-strict-overflow)
@@ -1045,11 +1130,6 @@ ifdef CONFIG_STACK_VALIDATION
   ifeq ($(has_libelf),1)
     objtool_target := tools/objtool FORCE
   else
-    ifdef CONFIG_UNWINDER_ORC
-      $(error "Cannot generate ORC metadata for CONFIG_UNWINDER_ORC=y, please install libelf-dev, libelf-devel or elfutils-libelf-devel")
-    else
-      $(warning "Cannot use CONFIG_STACK_VALIDATION=y, please install libelf-dev, libelf-devel or elfutils-libelf-devel")
-    endif
     SKIP_STACK_VALIDATION := 1
     export SKIP_STACK_VALIDATION
   endif
@@ -1193,6 +1273,14 @@ uapi-asm-generic:
 
 PHONY += prepare-objtool
 prepare-objtool: $(objtool_target)
+ifeq ($(SKIP_STACK_VALIDATION),1)
+ifdef CONFIG_UNWINDER_ORC
+	@echo "error: Cannot generate ORC metadata for CONFIG_UNWINDER_ORC=y, please install libelf-dev, libelf-devel or elfutils-libelf-devel" >&2
+	@false
+else
+	@echo "warning: Cannot use CONFIG_STACK_VALIDATION=y, please install libelf-dev, libelf-devel or elfutils-libelf-devel" >&2
+endif
+endif
 
 # Check for CONFIG flags that require compiler support. Abort the build
 # after .config has been processed, but before the kernel build starts.

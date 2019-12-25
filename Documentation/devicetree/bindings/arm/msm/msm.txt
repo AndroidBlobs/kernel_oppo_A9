@@ -59,6 +59,9 @@ SoCs:
 - QCS403
   compatible = "qcom,qcs403"
 
+- QCS401
+  compatible = "qcom,qcs401"
+
 - SDXPRAIRIE
   compatible = "qcom,sdxprairie"
 
@@ -177,15 +180,21 @@ compatible = "qcom,sm6150p-qrd"
 compatible = "qcom,sa6155-adp-star"
 compatible = "qcom,sa6155p-adp-star"
 compatible = "qcom,sa6155p"
+compatible = "qcom,sa6155-adp-air"
+compatible = "qcom,sa6155p-adp-air"
 compatible = "qcom,qcs405-rumi"
 compatible = "qcom,qcs405-iot"
 compatible = "qcom,qcs403-iot"
+compatible = "qcom,qcs401-iot"
 compatible = "qcom,sa8155-adp-star"
 compatible = "qcom,sa8155p-adp-star"
 compatible = "qcom,adp-star"
 compatible = "qcom,sa8155-v2-adp-air"
 compatible = "qcom,sa8155p-v2-adp-air"
 compatible = "qcom,adp-air"
+compatible = "qcom,sa8155-adp-alcor"
+compatible = "qcom,adp-alcor"
+compatible = "qcom,sa8155p-adp-alcor"
 compatible = "qcom,sdxprairie-rumi"
 compatible = "qcom,sdxprairie-mtp"
 compatible = "qcom,sdxprairie-cdp"
@@ -199,3 +208,4 @@ compatible = "qcom,sdmmagpiep"
 compatible = "qcom,sdmmagpiep-qrd"
 compatible = "qcom,trinket-rumi"
 compatible = "qcom,trinket-idp"
+compatible = "qcom,trinket-qrd"

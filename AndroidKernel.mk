@@ -48,7 +48,7 @@ TARGET_KERNEL_CROSS_COMPILE_PREFIX := $(strip $(TARGET_KERNEL_CROSS_COMPILE_PREF
 ifeq ($(TARGET_KERNEL_CROSS_COMPILE_PREFIX),)
 KERNEL_CROSS_COMPILE := arm-eabi-
 else
-KERNEL_CROSS_COMPILE := $(shell pwd)/$(TARGET_TOOLS_PREFIX)
+KERNEL_CROSS_COMPILE := $(TARGET_KERNEL_CROSS_COMPILE_PREFIX)
 endif
 
 ifeq ($(KERNEL_LLVM_SUPPORT), true)
@@ -133,6 +133,19 @@ mpath=`dirname $$mdpath`;\
 ko=`find $$mpath/kernel -type f -name *.ko`;\
 for i in $$ko; do mv $$i $(KERNEL_MODULES_OUT)/; done;\
 fi
+#ifdef VENDOR_EIDT
+#Xiao.Li@PSW.CN.WiFi.Network.1471780, 2018/06/26,
+#Add for limit speed function
+imq=`find $(KERNEL_MODULES_OUT)/ -type f -name imq.ko`;\
+if [ "$$imq" != "" ];then\
+mkdir -p $(PRODUCT_OUT)/system/lib/modules/;\
+cp -Rf  $(KERNEL_MODULES_OUT)/imq.ko $(PRODUCT_OUT)/system/lib/modules/ ;\
+fi
+xtIMQ=`find $(KERNEL_MODULES_OUT)/ -type f -name xt_IMQ.ko`;\
+if [ "$$xtIMQ" != "" ];then\
+cp -Rf  $(KERNEL_MODULES_OUT)/xt_IMQ.ko $(PRODUCT_OUT)/system/lib/modules/ ;\
+fi
+#endif
 endef
 
 define clean-module-folder
