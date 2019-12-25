@@ -41,8 +41,58 @@
 #include <asm/virt.h>
 
 #include <linux/syscore_ops.h>
+#ifdef VENDOR_EDIT
+#include <linux/wakeup_reason.h>
+#endif
 
 #include "irq-gic-common.h"
+#ifdef VENDOR_EDIT
+//Ji.Xu@BSP.Power.Basic 2018/06/14 add for resume irq.
+#include <linux/syscore_ops.h>
+static char MODEM_IRQ_NAME[]=         "modem";
+//static char MODEM_DATA_IRQ_NAME[]=    "glink"; //eg:glink-native
+static char MODEM_DATA_IRQ_NAME[]=    "glink_dummy"; //eg:dummy this irq
+static char MODEM_IPA_IRQ_NAME[]=     "ipa";
+static char ADSP_IRQ_NAME[]=          "adsp";
+static char CDSP_IRQ_NAME[]=          "cdsp";
+static char WLAN_DATA_IRQ_NAME[]=     "WLAN";
+extern u64 wakeup_source_count_modem;
+extern u64 wakeup_source_count_adsp;
+extern u64 wakeup_source_count_cdsp;
+extern u64 wakeup_source_count_wifi ;
+
+//Yongyao.Song@PSW.NW.PWR.919039, 2017/01/20
+//add for modem wake up source
+#define MODEM_WAKEUP_SRC_NUM 3
+#define MODEM_DIAG_WS_INDEX 0
+#define MODEM_IPA_WS_INDEX 1
+#define MODEM_QMI_WS_INDEX 2
+
+extern int modem_wakeup_src_count[MODEM_WAKEUP_SRC_NUM];
+extern char modem_wakeup_src_string[MODEM_WAKEUP_SRC_NUM][10];
+//glink count
+u64 glink_wakeup_count=0;
+u64 glink_wakeup_count_modem=0;
+u64 glink_wakeup_count_adsp=0;
+u64 glink_wakeup_count_cdsp=0;
+#endif /*VENDOR_EDIT*/
+#if defined(VENDOR_EDIT) && defined(CONFIG_PROCESS_RECLAIM) && defined(CONFIG_OPPO_SPECIAL_BUILD)
+/* Kui.Zhang@PSW.TEC.Kernel.Performance, 2019/02/27
+ * collect interrupt doing time during process reclaim, only effect in age test
+ */
+#include <linux/sched/clock.h>
+#endif
+
+
+
+#ifdef VENDOR_EDIT
+//Asiga@PSW.NW.DATA.2120730, 2019/06/26.
+//Add for: print qrtr debug msg and fix QMI wakeup statistics for QCOM platforms using glink.
+#define GLINK_IRQ_NAME "glink-native"
+int qrtr_first_msg = 0;
+char qrtr_first_msg_details[256] = {0};
+char *sub_qrtr_first_msg_details = NULL;
+#endif /* VENDOR_EDIT */
 
 struct redist_region {
 	void __iomem		*redist_base;
@@ -340,6 +390,17 @@ static int gic_suspend(void)
 	return 0;
 }
 
+#ifdef VENDOR_EDIT //yunqing.zeng@bsp.power.basic 20190716 Add for clear glink count when screen off
+void glink_count_clear(void)
+{
+	glink_wakeup_count=0;
+	glink_wakeup_count_modem=0;
+	glink_wakeup_count_adsp=0;
+	glink_wakeup_count_cdsp=0;
+}
+EXPORT_SYMBOL(glink_count_clear);
+#endif
+
 static void gic_show_resume_irq(struct gic_chip_data *gic)
 {
 	unsigned int i;
@@ -368,7 +429,52 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 		else if (desc->action && desc->action->name)
 			name = desc->action->name;
 
+		#ifndef VENDOR_EDIT
 		pr_warn("%s: %d triggered %s\n", __func__, irq, name);
+		#else
+		if(name != NULL)
+		{
+#ifdef VENDOR_EDIT
+//Asiga@PSW.NW.DATA.2120730, 2019/06/26.
+//Add for: print qrtr debug msg and fix QMI wakeup statistics for QCOM platforms using glink.
+			if (strncmp(name, GLINK_IRQ_NAME, strlen(GLINK_IRQ_NAME)) == 0) {
+				qrtr_first_msg = 1;
+				glink_wakeup_count++;
+				pr_info("%d : glall=%llu glmodem=%llu gladsp=%llu glcdsp=%llu", __LINE__, glink_wakeup_count, glink_wakeup_count_modem, glink_wakeup_count_adsp, glink_wakeup_count_cdsp);
+			}
+#endif /* VENDOR_EDIT */
+			pr_warn("%s: %d triggered %s\n", __func__, irq, name);
+		}
+		#endif
+		#ifdef VENDOR_EDIT
+		log_wakeup_reason(irq);
+		#endif
+		#ifdef VENDOR_EDIT //yunqing.zeng@bsp.power.basic 20190630 Adjust for more accurate about module wakeup count
+		if(name != NULL) {
+			if(strncmp(name, WLAN_DATA_IRQ_NAME, sizeof(WLAN_DATA_IRQ_NAME)-1) == 0)
+			{
+				wakeup_source_count_wifi++;
+			}
+			else if((strncmp(name, MODEM_IRQ_NAME, sizeof(MODEM_IRQ_NAME)-1) == 0) || (strncmp(name, MODEM_DATA_IRQ_NAME, sizeof(MODEM_DATA_IRQ_NAME)-1) == 0) ||
+				(strncmp(name, MODEM_IPA_IRQ_NAME, sizeof(MODEM_IPA_IRQ_NAME)-1) == 0))
+			{
+				wakeup_source_count_modem++;
+				if(strncmp(name, MODEM_IPA_IRQ_NAME, sizeof(MODEM_IPA_IRQ_NAME)-1) == 0) {
+					modem_wakeup_src_count[MODEM_IPA_WS_INDEX]++;
+				} else {
+					modem_wakeup_src_count[MODEM_QMI_WS_INDEX]++;
+				}
+			}
+			else if(strncmp(name, ADSP_IRQ_NAME, sizeof(ADSP_IRQ_NAME)-1) == 0)
+			{
+				wakeup_source_count_adsp++;
+			}
+			else if(strncmp(name, CDSP_IRQ_NAME, sizeof(CDSP_IRQ_NAME)-1) == 0)
+			{
+				wakeup_source_count_cdsp++;
+			}
+		}
+#endif /*VENDOR_EDIT*/
 	}
 }
 
@@ -411,6 +517,16 @@ static u64 gic_mpidr_to_affinity(unsigned long mpidr)
 static asmlinkage void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
 {
 	u32 irqnr;
+#if defined(VENDOR_EDIT) && defined(CONFIG_PROCESS_RECLAIM) && defined(CONFIG_OPPO_SPECIAL_BUILD)
+	/* Kui.Zhang@PSW.TEC.Kernel.Performance, 2019/02/27
+	 * collect interrupt doing time during process reclaim, only effect in age test
+	 */
+	struct task_struct *task = current;
+	unsigned long long start_ns = 0;
+
+	if (task && (task->flags & PF_RECLAIM_SHRINK))
+		start_ns = sched_clock();
+#endif
 
 	do {
 		irqnr = gic_read_iar();
@@ -456,6 +572,14 @@ static asmlinkage void __exception_irq_entry gic_handle_irq(struct pt_regs *regs
 			continue;
 		}
 	} while (irqnr != ICC_IAR1_EL1_SPURIOUS);
+
+#if defined(VENDOR_EDIT) && defined(CONFIG_PROCESS_RECLAIM) && defined(CONFIG_OPPO_SPECIAL_BUILD)
+	/* Kui.Zhang@PSW.TEC.Kernel.Performance, 2019/02/27
+	 * collect interrupt doing time during process reclaim, only effect in age test
+	 */
+	if ((task == current) && (task->flags & PF_RECLAIM_SHRINK))
+		task->reclaim_intr_ns += (unsigned long)(sched_clock() - start_ns);
+#endif
 }
 
 static void __init gic_dist_init(void)
@@ -552,10 +676,18 @@ static int __gic_populate_rdist(struct redist_region *region, void __iomem *ptr)
 		gic_data_rdist_rd_base() = ptr;
 		gic_data_rdist()->phys_base = region->phys_base + offset;
 
+#ifndef VENDOR_EDIT
+		//Nanwei.Deng@BSP.power.Basic 2018/05/01
 		pr_info("CPU%d: found redistributor %lx region %d:%pa\n",
 			smp_processor_id(), mpidr,
 			(int)(region - gic_data.redist_regions),
 			&gic_data_rdist()->phys_base);
+#else
+		pr_debug("CPU%d: found redistributor %lx region %d:%pa\n",
+			smp_processor_id(), mpidr,
+			(int)(region - gic_data.redist_regions),
+			&gic_data_rdist()->phys_base);
+#endif
 		return 0;
 	}
 

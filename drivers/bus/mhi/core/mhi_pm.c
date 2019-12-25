@@ -1054,6 +1054,12 @@ int mhi_pm_resume(struct mhi_controller *mhi_cntrl)
 		MHI_ERR("Did not enter M0 state, cur_state:%s pm_state:%s\n",
 			TO_MHI_STATE_STR(mhi_cntrl->dev_state),
 			to_mhi_pm_state_str(mhi_cntrl->pm_state));
+
+		/*
+		 * It's possible device already in error state and we didn't
+		 * process it due to low power mode, force a check
+		 */
+		mhi_intvec_threaded_handlr(0, mhi_cntrl);
 		return -EIO;
 	}
 
@@ -1067,7 +1073,6 @@ int __mhi_device_get_sync(struct mhi_controller *mhi_cntrl)
 	read_lock_bh(&mhi_cntrl->pm_lock);
 	mhi_cntrl->wake_get(mhi_cntrl, true);
 	if (MHI_PM_IN_SUSPEND_STATE(mhi_cntrl->pm_state)) {
-		pm_wakeup_event(&mhi_cntrl->mhi_dev->dev, 0);
 		mhi_cntrl->runtime_get(mhi_cntrl, mhi_cntrl->priv_data);
 		mhi_cntrl->runtime_put(mhi_cntrl, mhi_cntrl->priv_data);
 	}
@@ -1091,7 +1096,7 @@ int __mhi_device_get_sync(struct mhi_controller *mhi_cntrl)
 	return 0;
 }
 
-void mhi_device_get(struct mhi_device *mhi_dev)
+void mhi_device_get(struct mhi_device *mhi_dev, int vote)
 {
 	struct mhi_controller *mhi_cntrl = mhi_dev->mhi_cntrl;
 
@@ -1102,7 +1107,7 @@ void mhi_device_get(struct mhi_device *mhi_dev)
 }
 EXPORT_SYMBOL(mhi_device_get);
 
-int mhi_device_get_sync(struct mhi_device *mhi_dev)
+int mhi_device_get_sync(struct mhi_device *mhi_dev, int vote)
 {
 	struct mhi_controller *mhi_cntrl = mhi_dev->mhi_cntrl;
 	int ret;
@@ -1115,7 +1120,7 @@ int mhi_device_get_sync(struct mhi_device *mhi_dev)
 }
 EXPORT_SYMBOL(mhi_device_get_sync);
 
-void mhi_device_put(struct mhi_device *mhi_dev)
+void mhi_device_put(struct mhi_device *mhi_dev, int vote)
 {
 	struct mhi_controller *mhi_cntrl = mhi_dev->mhi_cntrl;
 
@@ -1134,22 +1139,8 @@ int mhi_force_rddm_mode(struct mhi_controller *mhi_cntrl)
 		to_mhi_pm_state_str(mhi_cntrl->pm_state),
 		TO_MHI_EXEC_STR(mhi_cntrl->ee));
 
-	/* before rddm mode, we need to enter M0 state */
-	ret = __mhi_device_get_sync(mhi_cntrl);
-	if (ret)
-		return ret;
-
-	mutex_lock(&mhi_cntrl->pm_mutex);
-	write_lock_irq(&mhi_cntrl->pm_lock);
-	if (!MHI_REG_ACCESS_VALID(mhi_cntrl->pm_state))
-		goto no_reg_access;
-
 	MHI_LOG("Triggering SYS_ERR to force rddm state\n");
-
 	mhi_set_mhi_state(mhi_cntrl, MHI_STATE_SYS_ERR);
-	mhi_cntrl->wake_put(mhi_cntrl, false);
-	write_unlock_irq(&mhi_cntrl->pm_lock);
-	mutex_unlock(&mhi_cntrl->pm_mutex);
 
 	/* wait for rddm event */
 	MHI_LOG("Waiting for device to enter RDDM state\n");
@@ -1163,12 +1154,5 @@ int mhi_force_rddm_mode(struct mhi_controller *mhi_cntrl)
 		TO_MHI_EXEC_STR(mhi_cntrl->ee), ret);
 
 	return ret;
-
-no_reg_access:
-	mhi_cntrl->wake_put(mhi_cntrl, false);
-	write_unlock_irq(&mhi_cntrl->pm_lock);
-	mutex_unlock(&mhi_cntrl->pm_mutex);
-
-	return -EIO;
 }
 EXPORT_SYMBOL(mhi_force_rddm_mode);

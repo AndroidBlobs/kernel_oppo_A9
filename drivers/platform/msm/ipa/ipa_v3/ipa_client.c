@@ -67,7 +67,8 @@ int ipa3_enable_data_path(u32 clnt_hdl)
 		 * if DPL client is not pulling the data
 		 * on other end from IPA hw.
 		 */
-		if (ep->client == IPA_CLIENT_USB_DPL_CONS)
+		if ((ep->client == IPA_CLIENT_USB_DPL_CONS) ||
+				(ep->client == IPA_CLIENT_MHI_DPL_CONS))
 			holb_cfg.en = IPA_HOLB_TMR_EN;
 		else
 			holb_cfg.en = IPA_HOLB_TMR_DIS;
@@ -427,7 +428,7 @@ void ipa3_deregister_client_callback(enum ipa_client_type client_type)
 		return;
 
 	if (ipa3_ctx->client_lock_unlock[client_cb] == NULL &&
-			ipa3_ctx->get_teth_port_state[client_cb] == NULL) {
+		ipa3_ctx->get_teth_port_state[client_cb] == NULL) {
 		IPAERR("client_lock_unlock is already NULL");
 		return;
 	}
@@ -842,6 +843,11 @@ int ipa3_enable_force_clear(u32 request_id, bool throttle_source,
 	struct ipa_enable_force_clear_datapath_req_msg_v01 req;
 	int result;
 
+	if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ) {
+		IPADBG("APQ platform - ignore force clear\n");
+		return 0;
+	}
+
 	memset(&req, 0, sizeof(req));
 	req.request_id = request_id;
 	req.source_pipe_bitmask = source_pipe_bitmask;
@@ -863,6 +869,11 @@ int ipa3_disable_force_clear(u32 request_id)
 {
 	struct ipa_disable_force_clear_datapath_req_msg_v01 req;
 	int result;
+
+	if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ) {
+		IPADBG("APQ platform - ignore force clear\n");
+		return 0;
+	}
 
 	memset(&req, 0, sizeof(req));
 	req.request_id = request_id;

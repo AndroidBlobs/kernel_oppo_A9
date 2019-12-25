@@ -1860,7 +1860,8 @@ static int ipa_fltrt_generate_hw_rule_bdy_from_eq(
 	if (attrib->fl_eq_present)
 		rest = ipa_write_32(attrib->fl_eq & 0xFFFFF, rest);
 
-	extra = ipa_pad_to_64(extra);
+	if (extra)
+		extra = ipa_pad_to_64(extra);
 	rest = ipa_pad_to_64(rest);
 	*buf = rest;
 

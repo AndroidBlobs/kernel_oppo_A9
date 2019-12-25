@@ -851,7 +851,7 @@ int ipa_create_uc_smmu_mapping(int res_idx, bool wlan_smmu_en,
 	return 0;
 }
 
-static int ipa_create_gsi_smmu_mapping(int res_idx, bool wlan_smmu_en,
+int ipa_create_gsi_smmu_mapping(int res_idx, bool wlan_smmu_en,
 		phys_addr_t pa, struct sg_table *sgt, size_t len, bool device,
 		unsigned long *iova)
 {
@@ -1923,15 +1923,6 @@ int ipa3_connect_wdi_pipe(struct ipa_wdi_in_params *in,
 	else
 		IPADBG("in->wdi_notify is null\n");
 
-	if (IPA_CLIENT_IS_CONS(in->sys.client)) {
-		in->sys.ipa_ep_cfg.aggr.aggr_en = IPA_ENABLE_AGGR;
-		in->sys.ipa_ep_cfg.aggr.aggr = IPA_GENERIC;
-		in->sys.ipa_ep_cfg.aggr.aggr_pkt_limit = IPA_AGGR_PKT_LIMIT;
-		in->sys.ipa_ep_cfg.aggr.aggr_byte_limit =
-						IPA_AGGR_HARD_BYTE_LIMIT;
-		in->sys.ipa_ep_cfg.aggr.aggr_hard_byte_limit_en =
-						IPA_ENABLE_AGGR;
-	}
 	if (!ep->skip_ep_cfg) {
 		if (ipa3_cfg_ep(ipa_ep_idx, &in->sys.ipa_ep_cfg)) {
 			IPAERR("fail to configure EP.\n");
@@ -2116,7 +2107,7 @@ int ipa3_disable_gsi_wdi_pipe(u32 clnt_hdl)
 	int result = 0;
 	struct ipa3_ep_context *ep;
 	struct ipa_ep_cfg_ctrl ep_cfg_ctrl;
-	u32 prod_hdl;
+	u32 cons_hdl;
 
 	IPADBG("ep=%d\n", clnt_hdl);
 
@@ -2137,23 +2128,28 @@ int ipa3_disable_gsi_wdi_pipe(u32 clnt_hdl)
 
 	/**
 	 * To avoid data stall during continuous SAP on/off before
-	 * setting delay to IPA Consumer pipe, remove delay and enable
-	 * holb on IPA Producer pipe
+	 * setting delay to IPA Consumer pipe (Client Producer),
+	 * remove delay and enable holb on IPA Producer pipe
 	 */
 	if (IPA_CLIENT_IS_PROD(ep->client)) {
 		IPADBG("Stopping PROD channel - hdl=%d clnt=%d\n",
-				clnt_hdl, ep->client);
+			clnt_hdl, ep->client);
 		/* remove delay on wlan-prod pipe*/
 		memset(&ep_cfg_ctrl, 0, sizeof(struct ipa_ep_cfg_ctrl));
 		ipa3_cfg_ep_ctrl(clnt_hdl, &ep_cfg_ctrl);
 
-		prod_hdl = ipa3_get_ep_mapping(IPA_CLIENT_WLAN1_CONS);
-		if (ipa3_ctx->ep[prod_hdl].valid == 1) {
-			result = ipa3_disable_data_path(prod_hdl);
+		cons_hdl = ipa3_get_ep_mapping(IPA_CLIENT_WLAN1_CONS);
+		if (cons_hdl == IPA_EP_NOT_ALLOCATED) {
+			IPAERR("Client %u is not mapped\n",
+				IPA_CLIENT_WLAN1_CONS);
+			goto gsi_timeout;
+		}
+		if (ipa3_ctx->ep[cons_hdl].valid == 1) {
+			result = ipa3_disable_data_path(cons_hdl);
 			if (result) {
 				IPAERR("disable data path failed\n");
 				IPAERR("res=%d clnt=%d\n",
-						result, prod_hdl);
+						result, cons_hdl);
 				goto gsi_timeout;
 			}
 		}
@@ -2253,7 +2249,7 @@ int ipa3_disable_wdi_pipe(u32 clnt_hdl)
 	struct ipa3_ep_context *ep;
 	union IpaHwWdiCommonChCmdData_t disable;
 	struct ipa_ep_cfg_ctrl ep_cfg_ctrl;
-	u32 prod_hdl;
+	u32 cons_hdl;
 
 	if (clnt_hdl >= ipa3_ctx->ipa_num_pipes ||
 	    ipa3_ctx->ep[clnt_hdl].valid == 0) {
@@ -2288,8 +2284,8 @@ int ipa3_disable_wdi_pipe(u32 clnt_hdl)
 
 	/**
 	 * To avoid data stall during continuous SAP on/off before
-	 * setting delay to IPA Consumer pipe, remove delay and enable
-	 * holb on IPA Producer pipe
+	 * setting delay to IPA Consumer pipe (Client Producer),
+	 * remove delay and enable holb on IPA Producer pipe
 	 */
 	if (IPA_CLIENT_IS_PROD(ep->client)) {
 		IPADBG("Stopping PROD channel - hdl=%d clnt=%d\n",
@@ -2298,13 +2294,18 @@ int ipa3_disable_wdi_pipe(u32 clnt_hdl)
 		memset(&ep_cfg_ctrl, 0, sizeof(struct ipa_ep_cfg_ctrl));
 		ipa3_cfg_ep_ctrl(clnt_hdl, &ep_cfg_ctrl);
 
-		prod_hdl = ipa3_get_ep_mapping(IPA_CLIENT_WLAN1_CONS);
-		if (ipa3_ctx->ep[prod_hdl].valid == 1) {
-			result = ipa3_disable_data_path(prod_hdl);
+		cons_hdl = ipa3_get_ep_mapping(IPA_CLIENT_WLAN1_CONS);
+		if (cons_hdl == IPA_EP_NOT_ALLOCATED) {
+			IPAERR("Client %u is not mapped\n",
+				IPA_CLIENT_WLAN1_CONS);
+			goto uc_timeout;
+		}
+		if (ipa3_ctx->ep[cons_hdl].valid == 1) {
+			result = ipa3_disable_data_path(cons_hdl);
 			if (result) {
 				IPAERR("disable data path failed\n");
 				IPAERR("res=%d clnt=%d\n",
-					result, prod_hdl);
+					result, cons_hdl);
 				result = -EPERM;
 				goto uc_timeout;
 			}

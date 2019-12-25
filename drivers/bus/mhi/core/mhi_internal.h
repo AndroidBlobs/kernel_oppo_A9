@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -134,6 +134,10 @@ extern struct bus_type mhi_bus_type;
 #define MHIDATALIMIT_HIGHER_MHIDATALIMIT_HIGHER_MASK (0xFFFFFFFF)
 #define MHIDATALIMIT_HIGHER_MHIDATALIMIT_HIGHER_SHIFT (0)
 
+/* Host request register */
+#define MHI_SOC_RESET_REQ_OFFSET (0xB0)
+#define MHI_SOC_RESET_REQ BIT(0)
+
 /* MHI misc capability registers */
 #define MISC_OFFSET (0x24)
 #define MISC_CAP_MASK (0xFFFFFFFF)
@@ -221,7 +225,7 @@ extern struct bus_type mhi_bus_type;
 #define BHIE_RXVECSTATUS_STATUS_ERROR (0x03)
 
 /* convert ticks to micro seconds by dividing by 19.2 */
-#define TIME_TICKS_TO_US(x) (((x) * 10) / 192)
+#define TIME_TICKS_TO_US(x) (div_u64((x) * 10, 192))
 
 struct mhi_event_ctxt {
 	u32 reserved : 8;
@@ -320,12 +324,19 @@ enum mhi_cmd_type {
 #define MHI_TRE_GET_EV_EXECENV(tre) (((tre)->dword[0] >> 24) & 0xFF)
 #define MHI_TRE_GET_EV_SEQ(tre) ((tre)->dword[0])
 #define MHI_TRE_GET_EV_TIME(tre) ((tre)->ptr)
+#define MHI_TRE_GET_EV_COOKIE(tre) lower_32_bits((tre)->ptr)
+#define MHI_TRE_GET_EV_VEID(tre) (((tre)->dword[0] >> 16) & 0xFF)
 
 /* transfer descriptor macros */
 #define MHI_TRE_DATA_PTR(ptr) (ptr)
 #define MHI_TRE_DATA_DWORD0(len) (len & MHI_MAX_MTU)
 #define MHI_TRE_DATA_DWORD1(bei, ieot, ieob, chain) ((2 << 16) | (bei << 10) \
 	| (ieot << 9) | (ieob << 8) | chain)
+
+/* rsc transfer descriptor macros */
+#define MHI_RSCTRE_DATA_PTR(ptr, len) (((u64)len << 48) | ptr)
+#define MHI_RSCTRE_DATA_DWORD0(cookie) (cookie)
+#define MHI_RSCTRE_DATA_DWORD1 (MHI_PKT_TYPE_COALESCING << 16)
 
 enum MHI_CMD {
 	MHI_CMD_RESET_CHAN,
@@ -337,12 +348,14 @@ enum MHI_PKT_TYPE {
 	MHI_PKT_TYPE_INVALID = 0x0,
 	MHI_PKT_TYPE_NOOP_CMD = 0x1,
 	MHI_PKT_TYPE_TRANSFER = 0x2,
+	MHI_PKT_TYPE_COALESCING = 0x8,
 	MHI_PKT_TYPE_RESET_CHAN_CMD = 0x10,
 	MHI_PKT_TYPE_STOP_CHAN_CMD = 0x11,
 	MHI_PKT_TYPE_START_CHAN_CMD = 0x12,
 	MHI_PKT_TYPE_STATE_CHANGE_EVENT = 0x20,
 	MHI_PKT_TYPE_CMD_COMPLETION_EVENT = 0x21,
 	MHI_PKT_TYPE_TX_EVENT = 0x22,
+	MHI_PKT_TYPE_RSC_TX_EVENT = 0x28,
 	MHI_PKT_TYPE_EE_EVENT = 0x40,
 	MHI_PKT_TYPE_TSYNC_EVENT = 0x48,
 	MHI_PKT_TYPE_STALE_EVENT, /* internal event */
@@ -460,6 +473,8 @@ enum MHI_XFER_TYPE {
 	MHI_XFER_SKB,
 	MHI_XFER_SCLIST,
 	MHI_XFER_NOP, /* CPU offload channel, host does not accept transfer */
+	MHI_XFER_DMA, /* receive dma address, already mapped by client */
+	MHI_XFER_RSC_DMA, /* RSC type, accept premapped buffer */
 };
 
 #define NR_OF_CMD_RINGS (1)
@@ -554,6 +569,8 @@ struct mhi_buf_info {
 	void *wp;
 	size_t len;
 	void *cb_buf;
+	bool used; /* indicate element is free to use */
+	bool pre_mapped; /* already pre-mapped by client */
 	enum dma_data_direction dir;
 };
 
@@ -696,7 +713,8 @@ int mhi_queue_sclist(struct mhi_device *mhi_dev, struct mhi_chan *mhi_chan,
 		  void *buf, size_t len, enum MHI_FLAGS mflags);
 int mhi_queue_nop(struct mhi_device *mhi_dev, struct mhi_chan *mhi_chan,
 		  void *buf, size_t len, enum MHI_FLAGS mflags);
-
+int mhi_queue_dma(struct mhi_device *mhi_dev, struct mhi_chan *mhi_chan,
+		  void *buf, size_t len, enum MHI_FLAGS mflags);
 
 /* register access methods */
 void mhi_db_brstmode(struct mhi_controller *mhi_cntrl, struct db_cfg *db_cfg,

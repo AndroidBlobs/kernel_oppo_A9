@@ -158,17 +158,28 @@ static inline unsigned char *echo_buf_addr(struct n_tty_data *ldata, size_t i)
 	return &ldata->echo_buf[i & (N_TTY_BUF_SIZE - 1)];
 }
 
+/* If we are not echoing the data, perhaps this is a secret so erase it */
+static void zero_buffer(struct tty_struct *tty, u8 *buffer, int size)
+{
+	bool icanon = !!L_ICANON(tty);
+	bool no_echo = !L_ECHO(tty);
+
+	if (icanon && no_echo)
+		memset(buffer, 0x00, size);
+}
+
 static int tty_copy_to_user(struct tty_struct *tty, void __user *to,
 			    size_t tail, size_t n)
 {
 	struct n_tty_data *ldata = tty->disc_data;
 	size_t size = N_TTY_BUF_SIZE - tail;
-	const void *from = read_buf_addr(ldata, tail);
+	void *from = read_buf_addr(ldata, tail);
 	int uncopied;
 
 	if (n > size) {
 		tty_audit_add_data(tty, from, size);
 		uncopied = copy_to_user(to, from, size);
+		zero_buffer(tty, from, size - uncopied);
 		if (uncopied)
 			return uncopied;
 		to += size;
@@ -177,7 +188,9 @@ static int tty_copy_to_user(struct tty_struct *tty, void __user *to,
 	}
 
 	tty_audit_add_data(tty, from, n);
-	return copy_to_user(to, from, n);
+	uncopied = copy_to_user(to, from, n);
+	zero_buffer(tty, from, n - uncopied);
+	return uncopied;
 }
 
 /**
@@ -758,7 +771,10 @@ static size_t __process_echoes(struct tty_struct *tty)
 #if defined(CONFIG_TTY_FLUSH_LOCAL_ECHO)
 	if (ldata->echo_commit != tail) {
 		if (!tty->delayed_work) {
+			#ifndef VENDOR_EDIT
+			/* yanghao@PSW.BSP.Kernel.Statbility 2018/10/12 avoid multi init work */
 			INIT_DELAYED_WORK(&tty->echo_delayed_work, continue_process_echoes);
+			#endif /* VENDOR_EDIT */
 			schedule_delayed_work(&tty->echo_delayed_work, 1);
 		}
 		tty->delayed_work = 1;
@@ -1907,6 +1923,14 @@ static void n_tty_close(struct tty_struct *tty)
 	if (tty->link)
 		n_tty_packet_mode_flush(tty);
 
+#ifdef VENDOR_EDIT
+/* yanghao@PSW.BSP.Kernel.Statbility 2018/10/12 when uart stop should cancel_delay work first */
+#if defined(CONFIG_TTY_FLUSH_LOCAL_ECHO)
+	if(tty->echo_delayed_work.work.func)
+		cancel_delayed_work_sync(&tty->echo_delayed_work);
+#endif
+#endif /* VENDOR_EDIT */
+
 	vfree(ldata);
 	tty->disc_data = NULL;
 }
@@ -1935,6 +1959,14 @@ static int n_tty_open(struct tty_struct *tty)
 	mutex_init(&ldata->output_lock);
 
 	tty->disc_data = ldata;
+
+#ifdef VENDOR_EDIT
+/* yanghao@PSW.BSP.Kernel.Statbility 2018/10/12 avoid multi init work */
+#if defined(CONFIG_TTY_FLUSH_LOCAL_ECHO)
+	INIT_DELAYED_WORK(&tty->echo_delayed_work, continue_process_echoes);
+#endif
+#endif /* VENDOR_EDIT */
+
 	tty->closing = 0;
 	/* indicate buffer work may resume */
 	clear_bit(TTY_LDISC_HALTED, &tty->flags);
@@ -1990,11 +2022,12 @@ static int copy_from_read_buf(struct tty_struct *tty,
 	n = min(head - ldata->read_tail, N_TTY_BUF_SIZE - tail);
 	n = min(*nr, n);
 	if (n) {
-		const unsigned char *from = read_buf_addr(ldata, tail);
+		unsigned char *from = read_buf_addr(ldata, tail);
 		retval = copy_to_user(*b, from, n);
 		n -= retval;
 		is_eof = n == 1 && *from == EOF_CHAR(tty);
 		tty_audit_add_data(tty, from, n);
+		zero_buffer(tty, from, n);
 		smp_store_release(&ldata->read_tail, ldata->read_tail + n);
 		/* Turn single EOF into zero-length read */
 		if (L_EXTPROC(tty) && ldata->icanon && is_eof &&

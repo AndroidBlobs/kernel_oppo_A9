@@ -152,7 +152,8 @@ struct rmnet_ipa3_context {
 	struct workqueue_struct *rm_q6_wq;
 	atomic_t is_initialized;
 	atomic_t is_ssr;
-	void *subsys_notify_handle;
+	void *lcl_mdm_subsys_notify_handle;
+	void *rmt_mdm_subsys_notify_handle;
 	u32 apps_to_ipa3_hdl;
 	u32 ipa3_to_apps_hdl;
 	struct mutex pipe_handle_guard;
@@ -164,6 +165,7 @@ struct rmnet_ipa3_context {
 	struct ipa_tether_device_info
 		tether_device
 		[IPACM_MAX_CLIENT_DEVICE_TYPES];
+	bool dl_csum_offload_enabled;
 	atomic_t ap_suspend;
 };
 
@@ -198,21 +200,22 @@ static int ipa3_setup_a7_qmap_hdr(void)
 
 	strlcpy(hdr_entry->name, IPA_A7_QMAP_HDR_NAME,
 				IPA_RESOURCE_NAME_MAX);
-	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5) {
+	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5 &&
+		rmnet_ipa3_ctx->dl_csum_offload_enabled) {
 		hdr_entry->hdr_len = IPA_DL_CHECKSUM_LENGTH; /* 8 bytes */
 		/* new DL QMAP header format */
-		hdr->hdr[0].hdr[0] = 0x40;
-		hdr->hdr[0].hdr[1] = 0;
-		hdr->hdr[0].hdr[2] = 0;
-		hdr->hdr[0].hdr[3] = 0;
-		hdr->hdr[0].hdr[4] = 0x4;
+		hdr_entry->hdr[0] = 0x40;
+		hdr_entry->hdr[1] = 0;
+		hdr_entry->hdr[2] = 0;
+		hdr_entry->hdr[3] = 0;
+		hdr_entry->hdr[4] = 0x4;
 		/*
 		 * Need to set csum required/valid bit on which will be replaced
 		 * by HW if checksum is incorrect after validation
 		 */
-		hdr->hdr[0].hdr[5] = 0x80;
-		hdr->hdr[0].hdr[6] = 0;
-		hdr->hdr[0].hdr[7] = 0;
+		hdr_entry->hdr[5] = 0x80;
+		hdr_entry->hdr[6] = 0;
+		hdr_entry->hdr[7] = 0;
 	} else
 		hdr_entry->hdr_len = IPA_QMAP_HEADER_LENGTH; /* 4 bytes */
 
@@ -334,8 +337,27 @@ static int ipa3_add_qmap_hdr(uint32_t mux_id, uint32_t *hdr_hdl)
 	 strlcpy(hdr_entry->name, hdr_name,
 				IPA_RESOURCE_NAME_MAX);
 
-	hdr_entry->hdr_len = IPA_QMAP_HEADER_LENGTH; /* 4 bytes */
-	hdr_entry->hdr[1] = (uint8_t) mux_id;
+	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5 &&
+		rmnet_ipa3_ctx->dl_csum_offload_enabled) {
+		hdr_entry->hdr_len = IPA_DL_CHECKSUM_LENGTH; /* 8 bytes */
+		/* new DL QMAP header format */
+		hdr_entry->hdr[0] = 0x40;
+		hdr_entry->hdr[1] = (uint8_t) mux_id;
+		hdr_entry->hdr[2] = 0;
+		hdr_entry->hdr[3] = 0;
+		hdr_entry->hdr[4] = 0x4;
+		/*
+		 * Need to set csum required/valid bit on which will be replaced
+		 * by HW if checksum is incorrect after validation
+		 */
+		hdr_entry->hdr[5] = 0x80;
+		hdr_entry->hdr[6] = 0;
+		hdr_entry->hdr[7] = 0;
+	} else {
+		hdr_entry->hdr_len = IPA_QMAP_HEADER_LENGTH; /* 4 bytes */
+		hdr_entry->hdr[1] = (uint8_t) mux_id;
+	}
+
 	IPAWANDBG("header (%s) with mux-id: (%d)\n",
 		hdr_name,
 		hdr_entry->hdr[1]);
@@ -454,11 +476,18 @@ static void ipa3_del_dflt_wan_rt_tables(void)
 
 static void ipa3_copy_qmi_flt_rule_ex(
 	struct ipa_ioc_ext_intf_prop *q6_ul_flt_rule_ptr,
-	struct ipa_filter_spec_ex_type_v01 *flt_spec_ptr)
+	void *flt_spec_ptr_void)
 {
 	int j;
+	struct ipa_filter_spec_ex_type_v01 *flt_spec_ptr;
 	struct ipa_ipfltr_range_eq_16 *q6_ul_filter_nat_ptr;
 	struct ipa_ipfltr_range_eq_16_type_v01 *filter_spec_nat_ptr;
+
+	/*
+	 * pure_ack and tos has the same size and type and we will treat tos
+	 * field as pure_ack in ipa4.5 version
+	 */
+	flt_spec_ptr = (struct ipa_filter_spec_ex_type_v01 *) flt_spec_ptr_void;
 
 	q6_ul_flt_rule_ptr->ip = flt_spec_ptr->ip_type;
 	q6_ul_flt_rule_ptr->action = flt_spec_ptr->filter_action;
@@ -571,7 +600,6 @@ static void ipa3_copy_qmi_flt_rule_ex(
 		flt_spec_ptr->filter_rule.ipv4_frag_eq_present;
 }
 
-
 int ipa3_copy_ul_filter_rule_to_ipa(struct ipa_install_fltr_rule_req_msg_v01
 		*rule_req)
 {
@@ -602,8 +630,14 @@ int ipa3_copy_ul_filter_rule_to_ipa(struct ipa_install_fltr_rule_req_msg_v01
 				rmnet_ipa3_ctx->num_q6_rules);
 			goto failure;
 		}
-		ipa3_copy_qmi_flt_rule_ex(&ipa3_qmi_ctx->q6_ul_filter_rule[i],
-			&rule_req->filter_spec_ex_list[i]);
+		if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5)
+			ipa3_copy_qmi_flt_rule_ex(
+				&ipa3_qmi_ctx->q6_ul_filter_rule[i],
+				&rule_req->filter_spec_ex2_list[i]);
+		else
+			ipa3_copy_qmi_flt_rule_ex(
+				&ipa3_qmi_ctx->q6_ul_filter_rule[i],
+				&rule_req->filter_spec_ex_list[i]);
 	}
 
 	if (rule_req->xlat_filter_indices_list_valid) {
@@ -1107,6 +1141,13 @@ static int ipa3_wwan_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct ipa3_wwan_private *wwan_ptr = netdev_priv(dev);
 	unsigned long flags;
 
+	if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ) {
+		IPAWANERR_RL("IPA embedded data on APQ platform\n");
+		dev_kfree_skb_any(skb);
+		dev->stats.tx_dropped++;
+		return NETDEV_TX_OK;
+	}
+
 	if (skb->protocol != htons(ETH_P_MAP)) {
 		IPAWANDBG_LOW
 		("SW filtering out none QMAP packet received from %s",
@@ -1368,10 +1409,14 @@ static int handle3_ingress_format(struct net_device *dev,
 	}
 
 	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5 &&
-		(in->u.data) & RMNET_IOCTL_INGRESS_FORMAT_CHECKSUM)
+		(in->u.data) & RMNET_IOCTL_INGRESS_FORMAT_CHECKSUM) {
 		ipa_wan_ep_cfg->ipa_ep_cfg.hdr.hdr_len = 8;
-	else
+		rmnet_ipa3_ctx->dl_csum_offload_enabled = true;
+	} else {
 		ipa_wan_ep_cfg->ipa_ep_cfg.hdr.hdr_len = 4;
+		rmnet_ipa3_ctx->dl_csum_offload_enabled = false;
+	}
+
 	ipa_wan_ep_cfg->ipa_ep_cfg.hdr.hdr_ofst_metadata_valid = 1;
 	ipa_wan_ep_cfg->ipa_ep_cfg.hdr.hdr_ofst_metadata = 1;
 	ipa_wan_ep_cfg->ipa_ep_cfg.hdr.hdr_ofst_pkt_size_valid = 1;
@@ -1409,7 +1454,19 @@ static int handle3_ingress_format(struct net_device *dev,
 	   &rmnet_ipa3_ctx->ipa3_to_apps_hdl);
 
 	mutex_unlock(&rmnet_ipa3_ctx->pipe_handle_guard);
+	if (ret)
+		goto end;
 
+	/* construct default WAN RT tbl for IPACM */
+	ret = ipa3_setup_a7_qmap_hdr();
+	if (ret)
+		goto end;
+
+	ret = ipa3_setup_dflt_wan_rt_tables();
+	if (ret)
+		ipa3_del_a7_qmap_hdr();
+
+end:
 	if (ret)
 		IPAWANERR("failed to configure ingress\n");
 
@@ -1715,13 +1772,18 @@ static int ipa3_wwan_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 			break;
 		/*  Get driver name  */
 		case RMNET_IOCTL_GET_DRIVER_NAME:
-			memcpy(&ext_ioctl_data.u.if_name,
-				IPA_NETDEV()->name, IFNAMSIZ);
-			ext_ioctl_data.u.if_name[IFNAMSIZ - 1] = '\0';
-			if (copy_to_user((u8 *)ifr->ifr_ifru.ifru_data,
+			if (IPA_NETDEV() != NULL) {
+				memcpy(&ext_ioctl_data.u.if_name,
+					IPA_NETDEV()->name, IFNAMSIZ);
+				ext_ioctl_data.u.if_name[IFNAMSIZ - 1] = '\0';
+				if (copy_to_user(ifr->ifr_ifru.ifru_data,
 					&ext_ioctl_data,
 					sizeof(struct rmnet_ioctl_extended_s)))
+					rc = -EFAULT;
+			} else {
+				IPAWANDBG("IPA_NETDEV is NULL\n");
 				rc = -EFAULT;
+			}
 			break;
 		/*  Add MUX ID  */
 		case RMNET_IOCTL_ADD_MUX_CHANNEL:
@@ -2237,13 +2299,22 @@ static void ipa3_rm_notify(void *dev, enum ipa_rm_event event,
 
 /* IPA_RM related functions end*/
 
-static int ipa3_ssr_notifier_cb(struct notifier_block *this,
+static int ipa3_lcl_mdm_ssr_notifier_cb(struct notifier_block *this,
 			   unsigned long code,
 			   void *data);
 
-static struct notifier_block ipa3_ssr_notifier = {
-	.notifier_call = ipa3_ssr_notifier_cb,
+static int ipa3_rmt_mdm_ssr_notifier_cb(struct notifier_block *this,
+			   unsigned long code,
+			   void *data);
+
+static struct notifier_block ipa3_lcl_mdm_ssr_notifier = {
+	.notifier_call = ipa3_lcl_mdm_ssr_notifier_cb,
 };
+
+static struct notifier_block ipa3_rmt_mdm_ssr_notifier = {
+	.notifier_call = ipa3_rmt_mdm_ssr_notifier_cb,
+};
+
 
 static int get_ipa_rmnet_dts_configuration(struct platform_device *pdev,
 		struct ipa3_rmnet_plat_drv_res *ipa_rmnet_drv_res)
@@ -2441,7 +2512,7 @@ static int ipa3_wwan_probe(struct platform_device *pdev)
 {
 	int ret, i;
 	struct net_device *dev;
-	int wan_cons_ep = ipa3_get_ep_mapping(IPA_CLIENT_APPS_WAN_CONS);
+	int wan_cons_ep;
 
 	pr_info("rmnet_ipa3 started initialization\n");
 
@@ -2460,6 +2531,7 @@ static int ipa3_wwan_probe(struct platform_device *pdev)
 		}
 	}
 
+	wan_cons_ep = ipa3_get_ep_mapping(IPA_CLIENT_APPS_WAN_CONS);
 	ret = get_ipa_rmnet_dts_configuration(pdev, &ipa3_rmnet_res);
 	ipa3_rmnet_ctx.ipa_rmnet_ssr = ipa3_rmnet_res.ipa_rmnet_ssr;
 
@@ -2492,16 +2564,6 @@ static int ipa3_wwan_probe(struct platform_device *pdev)
 	else
 		/* LE platform not loads uC */
 		ipa3_qmi_service_init(QMI_IPA_PLATFORM_TYPE_LE_V01);
-
-	/* construct default WAN RT tbl for IPACM */
-	if (wan_cons_ep != IPA_EP_NOT_ALLOCATED) {
-		ret = ipa3_setup_a7_qmap_hdr();
-		if (ret)
-			goto setup_a7_qmap_hdr_err;
-		ret = ipa3_setup_dflt_wan_rt_tables();
-		if (ret)
-			goto setup_dflt_wan_rt_tables_err;
-	}
 
 	if (!atomic_read(&rmnet_ipa3_ctx->is_ssr)) {
 		/* Start transport-driver fd ioctl for ipacm for first init */
@@ -2619,12 +2681,6 @@ q6_init_err:
 alloc_netdev_err:
 	ipa3_wan_ioctl_deinit();
 wan_ioctl_init_err:
-	if (wan_cons_ep != IPA_EP_NOT_ALLOCATED)
-		ipa3_del_dflt_wan_rt_tables();
-setup_dflt_wan_rt_tables_err:
-	if (wan_cons_ep != IPA_EP_NOT_ALLOCATED)
-		ipa3_del_a7_qmap_hdr();
-setup_a7_qmap_hdr_err:
 	ipa3_qmi_service_exit();
 	atomic_set(&rmnet_ipa3_ctx->is_ssr, 0);
 	return ret;
@@ -2671,6 +2727,8 @@ static int ipa3_wwan_remove(struct platform_device *pdev)
 	if (ipa3_qmi_ctx->modem_cfg_emb_pipe_flt == false)
 		ipa3_wwan_del_ul_flt_rule_to_ipa();
 	ipa3_cleanup_deregister_intf();
+	/* reset dl_csum_offload_enabled */
+	rmnet_ipa3_ctx->dl_csum_offload_enabled = false;
 	atomic_set(&rmnet_ipa3_ctx->is_initialized, 0);
 	IPAWANINFO("rmnet_ipa completed deinitialization\n");
 	return 0;
@@ -2826,12 +2884,23 @@ static void rmnet_ipa_send_ssr_notification(bool ssr_done)
 	}
 }
 
-static int ipa3_ssr_notifier_cb(struct notifier_block *this,
+static int ipa3_lcl_mdm_ssr_notifier_cb(struct notifier_block *this,
 			   unsigned long code,
 			   void *data)
 {
 	if (!ipa3_rmnet_ctx.ipa_rmnet_ssr)
 		return NOTIFY_DONE;
+
+	if (!ipa3_ctx) {
+		IPAWANERR_RL("ipa3_ctx was not initialized\n");
+		return NOTIFY_DONE;
+	}
+
+	if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ) {
+		IPAWANERR("Local modem SSR event=%lu on APQ platform\n",
+			code);
+		return NOTIFY_DONE;
+	}
 
 	switch (code) {
 	case SUBSYS_BEFORE_SHUTDOWN:
@@ -2890,6 +2959,41 @@ static int ipa3_ssr_notifier_cb(struct notifier_block *this,
 	}
 
 	IPAWANDBG_LOW("Exit\n");
+	return NOTIFY_DONE;
+}
+
+static int ipa3_rmt_mdm_ssr_notifier_cb(struct notifier_block *this,
+			   unsigned long code,
+			   void *data)
+{
+	if (!ipa3_rmnet_ctx.ipa_rmnet_ssr) {
+		IPAWANERR("SSR event=%lu while not enabled\n", code);
+		return NOTIFY_DONE;
+	}
+
+	if (ipa3_ctx->platform_type != IPA_PLAT_TYPE_APQ) {
+		IPAWANERR("Remote mdm SSR event=%lu on non-APQ platform=%d\n",
+			code, ipa3_ctx->platform_type);
+		return NOTIFY_DONE;
+	}
+
+	switch (code) {
+	case SUBSYS_BEFORE_SHUTDOWN:
+		IPAWANINFO("IPA received RMT MPSS BEFORE_SHUTDOWN\n");
+		break;
+	case SUBSYS_AFTER_SHUTDOWN:
+		IPAWANINFO("IPA Received RMT MPSS AFTER_SHUTDOWN\n");
+		break;
+	case SUBSYS_BEFORE_POWERUP:
+		IPAWANINFO("IPA received RMT MPSS BEFORE_POWERUP\n");
+		break;
+	case SUBSYS_AFTER_POWERUP:
+		IPAWANINFO("IPA received RMT MPSS AFTER_POWERUP\n");
+		break;
+	default:
+		IPAWANDBG("IPA received RMT MPSS event %lu", code);
+		break;
+	}
 	return NOTIFY_DONE;
 }
 
@@ -4354,7 +4458,12 @@ static int __init ipa3_wwan_init(void)
 {
 	int i, j;
 	struct ipa_tether_device_info *teth_ptr = NULL;
+	void *ssr_hdl;
 
+	if (!ipa3_ctx) {
+		IPAWANERR_RL("ipa3_ctx was not initialized\n");
+		return -EINVAL;
+	}
 	rmnet_ipa3_ctx = kzalloc(sizeof(*rmnet_ipa3_ctx), GFP_KERNEL);
 
 	if (!rmnet_ipa3_ctx)
@@ -4380,31 +4489,61 @@ static int __init ipa3_wwan_init(void)
 
 	ipa3_qmi_init();
 
-	/* Register for Modem SSR */
-	rmnet_ipa3_ctx->subsys_notify_handle = subsys_notif_register_notifier(
-			SUBSYS_MODEM,
-			&ipa3_ssr_notifier);
-	if (!IS_ERR(rmnet_ipa3_ctx->subsys_notify_handle))
-		return platform_driver_register(&rmnet_ipa_driver);
-	else
-		return (int)PTR_ERR(rmnet_ipa3_ctx->subsys_notify_handle);
+	/* Register for Local Modem SSR */
+	ssr_hdl = subsys_notif_register_notifier(SUBSYS_LOCAL_MODEM,
+		&ipa3_lcl_mdm_ssr_notifier);
+	if (!IS_ERR(ssr_hdl))
+		rmnet_ipa3_ctx->lcl_mdm_subsys_notify_handle = ssr_hdl;
+	else if (ipa3_ctx->platform_type != IPA_PLAT_TYPE_APQ)
+		return (int)PTR_ERR(ssr_hdl);
+
+	if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ) {
+		/* Register for Remote Modem SSR */
+		ssr_hdl = subsys_notif_register_notifier(SUBSYS_REMOTE_MODEM,
+			&ipa3_rmt_mdm_ssr_notifier);
+		if (IS_ERR(ssr_hdl)) {
+			if (rmnet_ipa3_ctx->lcl_mdm_subsys_notify_handle) {
+				subsys_notif_unregister_notifier(
+				rmnet_ipa3_ctx->lcl_mdm_subsys_notify_handle,
+				&ipa3_lcl_mdm_ssr_notifier);
+				rmnet_ipa3_ctx->lcl_mdm_subsys_notify_handle =
+					NULL;
+			}
+			return (int)PTR_ERR(ssr_hdl);
+		}
+		rmnet_ipa3_ctx->rmt_mdm_subsys_notify_handle = ssr_hdl;
+	}
+
+	return platform_driver_register(&rmnet_ipa_driver);
 }
 
 static void __exit ipa3_wwan_cleanup(void)
 {
 	int ret;
 
-	ipa3_qmi_cleanup();
-	mutex_destroy(&rmnet_ipa3_ctx->pipe_handle_guard);
-	mutex_destroy(&rmnet_ipa3_ctx->add_mux_channel_lock);
-	mutex_destroy(&rmnet_ipa3_ctx->per_client_stats_guard);
-	ret = subsys_notif_unregister_notifier(
-		rmnet_ipa3_ctx->subsys_notify_handle, &ipa3_ssr_notifier);
-	if (ret)
-		IPAWANERR(
-		"Error subsys_notif_unregister_notifier system %s, ret=%d\n",
-		SUBSYS_MODEM, ret);
 	platform_driver_unregister(&rmnet_ipa_driver);
+	if (rmnet_ipa3_ctx->lcl_mdm_subsys_notify_handle) {
+		ret = subsys_notif_unregister_notifier(
+			rmnet_ipa3_ctx->lcl_mdm_subsys_notify_handle,
+			&ipa3_lcl_mdm_ssr_notifier);
+		if (ret)
+			IPAWANERR(
+			"Failed to unregister subsys %s notifier ret=%d\n",
+			SUBSYS_LOCAL_MODEM, ret);
+	}
+	if (rmnet_ipa3_ctx->rmt_mdm_subsys_notify_handle) {
+		ret = subsys_notif_unregister_notifier(
+			rmnet_ipa3_ctx->rmt_mdm_subsys_notify_handle,
+			&ipa3_rmt_mdm_ssr_notifier);
+		if (ret)
+			IPAWANERR(
+			"Failed to unregister subsys %s notifier ret=%d\n",
+			SUBSYS_REMOTE_MODEM, ret);
+	}
+	ipa3_qmi_cleanup();
+	mutex_destroy(&rmnet_ipa3_ctx->per_client_stats_guard);
+	mutex_destroy(&rmnet_ipa3_ctx->add_mux_channel_lock);
+	mutex_destroy(&rmnet_ipa3_ctx->pipe_handle_guard);
 	kfree(rmnet_ipa3_ctx);
 	rmnet_ipa3_ctx = NULL;
 }

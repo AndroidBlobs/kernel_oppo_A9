@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -932,11 +932,22 @@ static int of_parse_ch_cfg(struct mhi_controller *mhi_cntrl,
 		mhi_chan->chan = chan;
 
 		ret = of_property_read_u32(child, "mhi,num-elements",
-					   (u32 *)&mhi_chan->buf_ring.elements);
-		if (!ret && !mhi_chan->buf_ring.elements)
+					   (u32 *)&mhi_chan->tre_ring.elements);
+		if (!ret && !mhi_chan->tre_ring.elements)
 			goto error_chan_cfg;
 
-		mhi_chan->tre_ring.elements = mhi_chan->buf_ring.elements;
+		/*
+		 * For some channels, local ring len should be bigger than
+		 * transfer ring len due to internal logical channels in device.
+		 * So host can queue much more buffers than transfer ring len.
+		 * Example, RSC channels should have a larger local channel
+		 * than transfer ring length.
+		 */
+		ret = of_property_read_u32(child, "mhi,local-elements",
+					   (u32 *)&mhi_chan->buf_ring.elements);
+		if (ret)
+			mhi_chan->buf_ring.elements =
+				mhi_chan->tre_ring.elements;
 
 		ret = of_property_read_u32(child, "mhi,event-ring",
 					   &mhi_chan->er_index);
@@ -983,6 +994,10 @@ static int of_parse_ch_cfg(struct mhi_controller *mhi_cntrl,
 			break;
 		case MHI_XFER_NOP:
 			mhi_chan->queue_xfer = mhi_queue_nop;
+			break;
+		case MHI_XFER_DMA:
+		case MHI_XFER_RSC_DMA:
+			mhi_chan->queue_xfer = mhi_queue_dma;
 			break;
 		default:
 			goto error_chan_cfg;
@@ -1160,10 +1175,6 @@ int of_register_mhi_controller(struct mhi_controller *mhi_cntrl)
 	mhi_dev->mhi_cntrl = mhi_cntrl;
 	dev_set_name(&mhi_dev->dev, "%04x_%02u.%02u.%02u", mhi_dev->dev_id,
 		     mhi_dev->domain, mhi_dev->bus, mhi_dev->slot);
-
-	/* init wake source */
-	device_init_wakeup(&mhi_dev->dev, true);
-
 	ret = device_add(&mhi_dev->dev);
 	if (ret)
 		goto error_add_dev;
@@ -1236,6 +1247,7 @@ EXPORT_SYMBOL(mhi_alloc_controller);
 int mhi_prepare_for_power_up(struct mhi_controller *mhi_cntrl)
 {
 	int ret;
+	u32 bhie_off;
 
 	mutex_lock(&mhi_cntrl->pm_mutex);
 
@@ -1255,15 +1267,38 @@ int mhi_prepare_for_power_up(struct mhi_controller *mhi_cntrl)
 	 * allocate rddm table if specified, this table is for debug purpose
 	 * so we'll ignore erros
 	 */
-	if (mhi_cntrl->rddm_size)
+	if (mhi_cntrl->rddm_size) {
 		mhi_alloc_bhie_table(mhi_cntrl, &mhi_cntrl->rddm_image,
 				     mhi_cntrl->rddm_size);
+
+		/*
+		 * This controller supports rddm, we need to manually clear
+		 * BHIE RX registers since por values are undefined.
+		 */
+		ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, BHIEOFF,
+				   &bhie_off);
+		if (ret) {
+			MHI_ERR("Error getting bhie offset\n");
+			goto bhie_error;
+		}
+
+		memset_io(mhi_cntrl->regs + bhie_off + BHIE_RXVECADDR_LOW_OFFS,
+			  0, BHIE_RXVECSTATUS_OFFS - BHIE_RXVECADDR_LOW_OFFS +
+			  4);
+	}
 
 	mhi_cntrl->pre_init = true;
 
 	mutex_unlock(&mhi_cntrl->pm_mutex);
 
 	return 0;
+
+bhie_error:
+	if (mhi_cntrl->rddm_image) {
+		mhi_free_bhie_table(mhi_cntrl, mhi_cntrl->rddm_image);
+		mhi_cntrl->rddm_image = NULL;
+	}
+	mhi_deinit_free_irq(mhi_cntrl);
 
 error_setup_irq:
 	mhi_deinit_dev_ctxt(mhi_cntrl);
@@ -1344,7 +1379,7 @@ static int mhi_driver_probe(struct device *dev)
 	int ret;
 
 	/* bring device out of lpm */
-	ret = mhi_device_get_sync(mhi_dev);
+	ret = mhi_device_get_sync(mhi_dev, 0);
 	if (ret)
 		return ret;
 
@@ -1392,7 +1427,7 @@ static int mhi_driver_probe(struct device *dev)
 		mhi_prepare_for_transfer(mhi_dev);
 
 exit_probe:
-	mhi_device_put(mhi_dev);
+	mhi_device_put(mhi_dev, 0);
 
 	return ret;
 }
@@ -1470,7 +1505,7 @@ static int mhi_driver_remove(struct device *dev)
 	/* relinquish any pending votes */
 	read_lock_bh(&mhi_cntrl->pm_lock);
 	while (atomic_read(&mhi_dev->dev_wake))
-		mhi_device_put(mhi_dev);
+		mhi_device_put(mhi_dev, 0);
 	read_unlock_bh(&mhi_cntrl->pm_lock);
 
 	return 0;
