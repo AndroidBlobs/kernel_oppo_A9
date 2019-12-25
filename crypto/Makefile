@@ -142,6 +142,7 @@ ecdh_generic-y += ecdh.o
 ecdh_generic-y += ecdh_helper.o
 obj-$(CONFIG_CRYPTO_ECDH) += ecdh_generic.o
 
+obj-$(CONFIG_CRYPTO_ZSTD) += zstd.o
 #
 # generic algorithms and the async_tx api
 #
