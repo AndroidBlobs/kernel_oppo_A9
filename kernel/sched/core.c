@@ -32,6 +32,7 @@
 #include <linux/kthread.h>
 
 #include <asm/switch_to.h>
+#include <linux/msm_rtb.h>
 #include <asm/tlb.h>
 #ifdef CONFIG_PARAVIRT
 #include <asm/paravirt.h>
@@ -2916,7 +2917,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 	 */
 	rq_unpin_lock(rq, rf);
 	spin_release(&rq->lock.dep_map, 1, _THIS_IP_);
-
+	uncached_logk(LOGK_CTXID, (void *)(u64)next->pid);
 	/* Here we just switch the register state and the stack. */
 	switch_to(prev, next, prev);
 	barrier();
@@ -3430,6 +3431,22 @@ again:
 	BUG();
 }
 
+#if defined(VENDOR_EDIT) && defined(CONFIG_PROCESS_RECLAIM) && defined(CONFIG_OPPO_SPECIAL_BUILD)
+/* Kui.Zhang@PSW.BSP.Kernel.Performance, 2019-02-26,
+ * collect reclaimed_shrinked task schedule record
+ */
+static inline void collect_reclaimed_task(struct task_struct *prev,
+		struct task_struct *next)
+{
+	if (next->flags & PF_RECLAIM_SHRINK)
+		next->reclaim_ns = sched_clock();
+
+	if (prev->flags & PF_RECLAIM_SHRINK)
+		prev->reclaim_run_ns += sched_clock() - prev->reclaim_ns;
+}
+#endif
+
+
 /*
  * __schedule() is the main scheduler function.
  *
@@ -3563,6 +3580,12 @@ static void __sched notrace __schedule(bool preempt)
 
 		trace_sched_switch(preempt, prev, next);
 
+#if defined(VENDOR_EDIT) && defined(CONFIG_PROCESS_RECLAIM) && defined(CONFIG_OPPO_SPECIAL_BUILD)
+		/* Kui.Zhang@PSW.BSP.Kernel.Performance, 2019-02-26,
+		 * collect reclaimed_shrinked task schedule record
+		 */
+		collect_reclaimed_task(prev, next);
+#endif
 		/* Also unlocks the rq: */
 		rq = context_switch(rq, prev, next, &rf);
 	} else {
@@ -6158,15 +6181,10 @@ int sched_cpu_activate(unsigned int cpu)
 
 #ifdef CONFIG_SCHED_SMT
 	/*
-	 * The sched_smt_present static key needs to be evaluated on every
-	 * hotplug event because at boot time SMT might be disabled when
-	 * the number of booted CPUs is limited.
-	 *
-	 * If then later a sibling gets hotplugged, then the key would stay
-	 * off and SMT scheduling would never be functional.
+	 * When going up, increment the number of cores with SMT present.
 	 */
-	if (cpumask_weight(cpu_smt_mask(cpu)) > 1)
-		static_branch_enable_cpuslocked(&sched_smt_present);
+	if (cpumask_weight(cpu_smt_mask(cpu)) == 2)
+		static_branch_inc_cpuslocked(&sched_smt_present);
 #endif
 	set_cpu_active(cpu, true);
 
@@ -6214,6 +6232,14 @@ int sched_cpu_deactivate(unsigned int cpu)
 	synchronize_sched();
 #endif
 	synchronize_rcu();
+
+#ifdef CONFIG_SCHED_SMT
+	/*
+	 * When going down, decrement the number of cores with SMT present.
+	 */
+	if (cpumask_weight(cpu_smt_mask(cpu)) == 2)
+		static_branch_dec_cpuslocked(&sched_smt_present);
+#endif
 
 	if (!sched_smp_initialized)
 		return 0;
@@ -6288,14 +6314,17 @@ void __init sched_init_smp(void)
 	/*
 	 * There's no userspace yet to cause hotplug operations; hence all the
 	 * CPU masks are stable and all blatant races in the below code cannot
-	 * happen.
+	 * happen. The hotplug lock is nevertheless taken to satisfy lockdep,
+	 * but there won't be any contention on it.
 	 */
+	cpus_read_lock();
 	mutex_lock(&sched_domains_mutex);
 	sched_init_domains(cpu_active_mask);
 	cpumask_andnot(non_isolated_cpus, cpu_possible_mask, cpu_isolated_map);
 	if (cpumask_empty(non_isolated_cpus))
 		cpumask_set_cpu(smp_processor_id(), non_isolated_cpus);
 	mutex_unlock(&sched_domains_mutex);
+	cpus_read_unlock();
 
 	update_cluster_topology();
 
@@ -6905,6 +6934,7 @@ static void sched_update_updown_migrate_values(unsigned int *data,
 						 cluster_cpus);
 }
 
+static DEFINE_MUTEX(mutex);
 int sched_updown_migrate_handler(struct ctl_table *table, int write,
 				 void __user *buffer, size_t *lenp,
 				 loff_t *ppos)
@@ -6912,7 +6942,6 @@ int sched_updown_migrate_handler(struct ctl_table *table, int write,
 	int ret, i;
 	unsigned int *data = (unsigned int *)table->data;
 	unsigned int *old_val;
-	static DEFINE_MUTEX(mutex);
 	static int cap_margin_levels = -1;
 
 	mutex_lock(&mutex);
@@ -6971,6 +7000,91 @@ unlock_mutex:
 
 	return ret;
 }
+
+#ifdef VENDOR_EDIT
+//cuixiaogang@SRC.hypnus.2018.07.11. add for change up/down migrate
+static int find_max_clusters(void)
+{
+	int cpu, max_clusters;
+
+	for (cpu = max_clusters = 0; cpu < num_possible_cpus();) {
+		cpu += cpumask_weight(topology_core_cpumask(cpu));
+		max_clusters++;
+	}
+
+	return max_clusters;
+}
+
+int sched_get_updown_migrate(unsigned int *up_pct, unsigned int *down_pct)
+{
+	int i, max_clusters;
+
+	if (!up_pct || !down_pct) {
+		pr_err("%s: up_pct or down_pct is null\n", __func__);
+		return -EINVAL;
+	}
+
+	mutex_lock(&mutex);
+
+	max_clusters = find_max_clusters();
+	if (max_clusters <= 1) {
+		pr_err("%s: the value of max clusters is %d\n",
+			__func__, max_clusters);
+		mutex_unlock(&mutex);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < max_clusters - 1; i++) {
+		up_pct[i] = SCHED_FIXEDPOINT_SCALE * 100
+			/ sysctl_sched_capacity_margin_up[i];
+		down_pct[i] = SCHED_FIXEDPOINT_SCALE * 100
+			/ sysctl_sched_capacity_margin_down[i];
+	}
+
+	mutex_unlock(&mutex);
+
+	return 0;
+}
+EXPORT_SYMBOL(sched_get_updown_migrate);
+
+int sched_set_updown_migrate(unsigned int *up_pct, unsigned int *down_pct)
+{
+	int i, max_clusters;
+
+	if (!up_pct || !down_pct) {
+		pr_err("%s: up_pct or down_pct is null\n", __func__);
+		return -EINVAL;
+	}
+
+	mutex_lock(&mutex);
+
+	max_clusters = find_max_clusters();
+	if (max_clusters <= 1) {
+		pr_err("%s: the value of max clusters is %d\n",
+		       __func__, max_clusters);
+		mutex_unlock(&mutex);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < max_clusters - 1; i++) {
+		sysctl_sched_capacity_margin_up[i]
+			= SCHED_FIXEDPOINT_SCALE * 100 / up_pct[i];
+		sysctl_sched_capacity_margin_down[i]
+			= SCHED_FIXEDPOINT_SCALE * 100 / down_pct[i];
+	}
+
+	sched_update_updown_migrate_values(sysctl_sched_capacity_margin_up,
+					   max_clusters - 1);
+
+	sched_update_updown_migrate_values(sysctl_sched_capacity_margin_down,
+					   max_clusters - 1);
+
+	mutex_unlock(&mutex);
+
+	return 0;
+}
+EXPORT_SYMBOL(sched_set_updown_migrate);
+#endif /* VENDOR_EDIT */
 #endif
 
 static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
@@ -7517,3 +7631,11 @@ void sched_exit(struct task_struct *p)
 #endif /* CONFIG_SCHED_WALT */
 
 __read_mostly bool sched_predl = 1;
+
+#ifdef VENDOR_EDIT
+/*fanhui@PhoneSW.BSP, 2016-06-23, get current task on one cpu*/
+struct task_struct *oppo_get_cpu_task(int cpu)
+{
+	return cpu_curr(cpu);
+}
+#endif

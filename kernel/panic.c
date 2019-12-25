@@ -14,6 +14,7 @@
 #include <linux/kmsg_dump.h>
 #include <linux/kallsyms.h>
 #include <linux/notifier.h>
+#include <linux/vt_kern.h>
 #include <linux/module.h>
 #include <linux/random.h>
 #include <linux/ftrace.h>
@@ -31,8 +32,16 @@
 #include <trace/events/exception.h>
 #include <soc/qcom/minidump.h>
 
+#ifdef VENDOR_EDIT
+//Liang.Zhang@PSW.TECH.BOOTUP, 2018/11/12, Add for monitor kernel panic
+#include "../../../../../vendor/oppo/oppo_phoenix/kernel/oppo_phoenix/oppo_phoenix.h"
+static int kernel_panic_happened = 0;
+#endif
+
+
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
+
 
 int panic_on_oops = CONFIG_PANIC_ON_OOPS_VALUE;
 static unsigned long tainted_mask;
@@ -141,6 +150,18 @@ void panic(const char *fmt, ...)
 	int old_cpu, this_cpu;
 	bool _crash_kexec_post_notifiers = crash_kexec_post_notifiers;
 
+#ifdef VENDOR_EDIT
+    //Liang.Zhang@PSW.TECH.BOOTUP, 2019/01/24, avoid for Recursive panic
+    kernel_panic_happened++;
+	if(phx_set_boot_error && phx_is_phoenix_boot_completed)
+	{
+		// we only care about panic on boot not complete
+		if(kernel_panic_happened < 2 && !phx_is_phoenix_boot_completed())
+		{
+			phx_set_boot_error(ERROR_KERNEL_PANIC);
+		}
+	}
+#endif  /*VENDOR_EDIT*/
 	trace_kernel_panic(0);
 
 	/*
@@ -178,6 +199,9 @@ void panic(const char *fmt, ...)
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
 	dump_stack_minidump(0);
+	#ifdef VENDOR_EDIT //yixue.ge@bsp.drv add for dump cpu contex for minidump
+	dumpcpuregs(0);
+	#endif
 	pr_emerg("Kernel panic - not syncing: %s\n", buf);
 #ifdef CONFIG_DEBUG_BUGVERBOSE
 	/*
@@ -236,7 +260,10 @@ void panic(const char *fmt, ...)
 	if (_crash_kexec_post_notifiers)
 		__crash_kexec(NULL);
 
-	bust_spinlocks(0);
+#ifdef CONFIG_VT
+	unblank_screen();
+#endif
+	console_unblank();
 
 	/*
 	 * We may have ended up stopping the CPU holding the lock (in

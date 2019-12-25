@@ -2322,6 +2322,49 @@ out_release_tset:
 	return ret;
 }
 
+#ifdef VENDOR_EDIT
+//zhoumingjun@Swdp.shanghai, 2018/07/10, get task cgroup path by root name for elsa
+int task_cgroup_path_by_root(struct task_struct *task, const char *rootname,  char *buf, size_t buflen)
+{
+	struct cgroup_root *root;
+	struct cgroup *cgrp;
+	bool root_found = false;
+	int ret = 0;
+	struct cgroup_subsys *ss;
+	int ssid, rootssid = -1;
+
+	mutex_lock(&cgroup_mutex);
+	spin_lock_irq(&css_set_lock);
+
+	/* find root subsys id by name */
+	for_each_subsys(ss, ssid) {
+		if (!strcmp(ss->legacy_name, rootname)) {
+			rootssid = ssid;
+			break;
+		}
+	}
+
+	if (rootssid >= 0) {
+		for_each_root(root) {
+			if (root && (root->subsys_mask & (1 << rootssid))) {
+				cgrp = task_cgroup_from_root(task, root);
+				ret = cgroup_path_ns_locked(cgrp, buf, buflen, &init_cgroup_ns);
+				root_found = true;
+				break;
+			}
+		}
+	}
+
+	if (!root_found)
+		ret = strlcpy(buf, "/", buflen);
+
+	spin_unlock_irq(&css_set_lock);
+	mutex_unlock(&cgroup_mutex);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(task_cgroup_path_by_root);
+#endif
+
 /**
  * cgroup_migrate_vet_dst - verify whether a cgroup can be migration destination
  * @dst_cgrp: destination cgroup to test
@@ -4080,20 +4123,25 @@ static void css_task_iter_advance(struct css_task_iter *it)
 
 	lockdep_assert_held(&css_set_lock);
 repeat:
-	/*
-	 * Advance iterator to find next entry.  cset->tasks is consumed
-	 * first and then ->mg_tasks.  After ->mg_tasks, we move onto the
-	 * next cset.
-	 */
-	next = it->task_pos->next;
+	if (it->task_pos) {
+		/*
+		 * Advance iterator to find next entry.  cset->tasks is
+		 * consumed first and then ->mg_tasks.  After ->mg_tasks,
+		 * we move onto the next cset.
+		 */
+		next = it->task_pos->next;
 
-	if (next == it->tasks_head)
-		next = it->mg_tasks_head->next;
+		if (next == it->tasks_head)
+			next = it->mg_tasks_head->next;
 
-	if (next == it->mg_tasks_head)
+		if (next == it->mg_tasks_head)
+			css_task_iter_advance_css_set(it);
+		else
+			it->task_pos = next;
+	} else {
+		/* called from start, proceed to the first cset */
 		css_task_iter_advance_css_set(it);
-	else
-		it->task_pos = next;
+	}
 
 	/* if PROCS, skip over tasks which aren't group leaders */
 	if ((it->flags & CSS_TASK_ITER_PROCS) && it->task_pos &&
@@ -4133,7 +4181,7 @@ void css_task_iter_start(struct cgroup_subsys_state *css, unsigned int flags,
 
 	it->cset_head = it->cset_pos;
 
-	css_task_iter_advance_css_set(it);
+	css_task_iter_advance(it);
 
 	spin_unlock_irq(&css_set_lock);
 }
