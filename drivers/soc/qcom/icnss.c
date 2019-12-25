@@ -35,6 +35,9 @@
 #include <linux/ipc_logging.h>
 #include <linux/thread_info.h>
 #include <linux/uaccess.h>
+#include <linux/adc-tm-clients.h>
+#include <linux/iio/consumer.h>
+#include <dt-bindings/iio/qcom,spmi-vadc.h>
 #include <linux/etherdevice.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
@@ -67,7 +70,7 @@
 #define ICNSS_QUIRKS_DEFAULT		BIT(FW_REJUVENATE_ENABLE)
 #define ICNSS_MAX_PROBE_CNT		2
 
-#define PROBE_TIMEOUT			5000
+#define PROBE_TIMEOUT			15000
 
 static struct icnss_priv *penv;
 
@@ -813,6 +816,136 @@ int icnss_call_driver_uevent(struct icnss_priv *priv,
 	return priv->ops->uevent(&priv->pdev->dev, &uevent_data);
 }
 
+
+static int icnss_get_phone_power(struct icnss_priv *priv, uint64_t *result_uv)
+{
+	int ret = 0;
+	int result;
+
+	if (!priv->channel) {
+		icnss_pr_err("Channel doesn't exists\n");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	ret = iio_read_channel_processed(penv->channel, &result);
+	if (ret < 0) {
+		icnss_pr_err("Error reading channel, ret = %d\n", ret);
+		goto out;
+	}
+
+	*result_uv = (uint64_t) result;
+out:
+	return ret;
+}
+
+static void icnss_vph_notify(enum adc_tm_state state, void *ctx)
+{
+	struct icnss_priv *priv = ctx;
+	uint64_t vph_pwr = 0;
+	uint64_t vph_pwr_prev;
+	int ret = 0;
+	bool update = true;
+
+	if (!priv) {
+		icnss_pr_err("Priv pointer is NULL\n");
+		return;
+	}
+
+	vph_pwr_prev = priv->vph_pwr;
+
+	ret = icnss_get_phone_power(priv, &vph_pwr);
+	if (ret < 0)
+		return;
+
+	if (vph_pwr < ICNSS_THRESHOLD_LOW) {
+		if (vph_pwr_prev < ICNSS_THRESHOLD_LOW)
+			update = false;
+		priv->vph_monitor_params.state_request =
+			ADC_TM_HIGH_THR_ENABLE;
+		priv->vph_monitor_params.high_thr = ICNSS_THRESHOLD_LOW +
+			ICNSS_THRESHOLD_GUARD;
+		priv->vph_monitor_params.low_thr = 0;
+	} else if (vph_pwr > ICNSS_THRESHOLD_HIGH) {
+		if (vph_pwr_prev > ICNSS_THRESHOLD_HIGH)
+			update = false;
+		priv->vph_monitor_params.state_request =
+			ADC_TM_LOW_THR_ENABLE;
+		priv->vph_monitor_params.low_thr = ICNSS_THRESHOLD_HIGH -
+			ICNSS_THRESHOLD_GUARD;
+		priv->vph_monitor_params.high_thr = 0;
+	} else {
+		if (vph_pwr_prev > ICNSS_THRESHOLD_LOW &&
+		    vph_pwr_prev < ICNSS_THRESHOLD_HIGH)
+			update = false;
+		priv->vph_monitor_params.state_request =
+			ADC_TM_HIGH_LOW_THR_ENABLE;
+		priv->vph_monitor_params.low_thr = ICNSS_THRESHOLD_LOW;
+		priv->vph_monitor_params.high_thr = ICNSS_THRESHOLD_HIGH;
+	}
+
+	priv->vph_pwr = vph_pwr;
+
+	if (update) {
+		icnss_send_vbatt_update(priv, vph_pwr);
+		icnss_pr_dbg("set low threshold to %d, high threshold to %d Phone power=%llu\n",
+			     priv->vph_monitor_params.low_thr,
+			     priv->vph_monitor_params.high_thr, vph_pwr);
+	}
+
+	ret = adc_tm5_channel_measure(priv->adc_tm_dev,
+				      &priv->vph_monitor_params);
+	if (ret)
+		icnss_pr_err("TM channel setup failed %d\n", ret);
+}
+
+static int icnss_setup_vph_monitor(struct icnss_priv *priv)
+{
+	int ret = 0;
+
+	if (!priv->adc_tm_dev) {
+		icnss_pr_err("ADC TM handler is NULL\n");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	priv->vph_monitor_params.low_thr = ICNSS_THRESHOLD_LOW;
+	priv->vph_monitor_params.high_thr = ICNSS_THRESHOLD_HIGH;
+	priv->vph_monitor_params.state_request = ADC_TM_HIGH_LOW_THR_ENABLE;
+	priv->vph_monitor_params.channel = ADC_VBAT_SNS;
+	priv->vph_monitor_params.btm_ctx = priv;
+	priv->vph_monitor_params.threshold_notification = &icnss_vph_notify;
+	icnss_pr_dbg("Set low threshold to %d, high threshold to %d\n",
+		     priv->vph_monitor_params.low_thr,
+		     priv->vph_monitor_params.high_thr);
+
+	ret = adc_tm5_channel_measure(priv->adc_tm_dev,
+				      &priv->vph_monitor_params);
+	if (ret)
+		icnss_pr_err("TM channel setup failed %d\n", ret);
+out:
+	return ret;
+}
+
+static int icnss_init_vph_monitor(struct icnss_priv *priv)
+{
+	int ret = 0;
+
+	ret = icnss_get_phone_power(priv, &priv->vph_pwr);
+	if (ret < 0)
+		goto out;
+
+	icnss_pr_dbg("Phone power=%llu\n", priv->vph_pwr);
+
+	icnss_send_vbatt_update(priv, priv->vph_pwr);
+
+	ret = icnss_setup_vph_monitor(priv);
+	if (ret)
+		goto out;
+out:
+	return ret;
+}
+
 static int icnss_driver_event_server_arrive(void *data)
 {
 	int ret = 0;
@@ -882,6 +1015,9 @@ static int icnss_driver_event_server_arrive(void *data)
 	if (!penv->fw_early_crash_irq)
 		register_early_crash_notifications(&penv->pdev->dev);
 
+	if (penv->vbatt_supported)
+		icnss_init_vph_monitor(penv);
+
 	return ret;
 
 err_setup_msa:
@@ -904,6 +1040,10 @@ static int icnss_driver_event_server_exit(void *data)
 	icnss_pr_info("WLAN FW Service Disconnected: 0x%lx\n", penv->state);
 
 	icnss_clear_server(penv);
+
+	if (penv->adc_tm_dev && penv->vbatt_supported)
+		adc_tm5_disable_chan_meas(penv->adc_tm_dev,
+					  &penv->vph_monitor_params);
 
 	return 0;
 }
@@ -1364,8 +1504,8 @@ static int icnss_modem_notifier_nb(struct notifier_block *nb,
 	if (code == SUBSYS_BEFORE_SHUTDOWN && !notif->crashed &&
 	    test_bit(ICNSS_BLOCK_SHUTDOWN, &priv->state)) {
 		if (!wait_for_completion_timeout(&priv->unblock_shutdown,
-						 PROBE_TIMEOUT))
-			icnss_pr_err("wlan driver probe timeout\n");
+				msecs_to_jiffies(PROBE_TIMEOUT)))
+			icnss_pr_err("modem block shutdown timeout\n");
 	}
 
 	if (code == SUBSYS_BEFORE_SHUTDOWN && !notif->crashed) {
@@ -2155,6 +2295,7 @@ int icnss_trigger_recovery(struct device *dev)
 	if (test_bit(ICNSS_PD_RESTART, &priv->state)) {
 		icnss_pr_err("PD recovery already in progress: state: 0x%lx\n",
 			     priv->state);
+		ret = -EPERM;
 		goto out;
 	}
 
@@ -3144,6 +3285,64 @@ static void icnss_sysfs_destroy(struct icnss_priv *priv)
 		kobject_put(icnss_kobject);
 }
 
+static int icnss_get_vbatt_info(struct icnss_priv *priv)
+{
+	struct adc_tm_chip *adc_tm_dev = NULL;
+	struct iio_channel *channel = NULL;
+	int ret = 0;
+
+	adc_tm_dev = get_adc_tm(&priv->pdev->dev, "icnss");
+	if (PTR_ERR(adc_tm_dev) == -EPROBE_DEFER) {
+		icnss_pr_err("adc_tm_dev probe defer\n");
+		return -EPROBE_DEFER;
+	}
+
+	if (IS_ERR(adc_tm_dev)) {
+		ret = PTR_ERR(adc_tm_dev);
+		icnss_pr_err("Not able to get ADC dev, VBATT monitoring is disabled: %d\n",
+			     ret);
+		return ret;
+	}
+
+	channel = iio_channel_get(&priv->pdev->dev, "icnss");
+	if (PTR_ERR(channel) == -EPROBE_DEFER) {
+		icnss_pr_err("channel probe defer\n");
+		return -EPROBE_DEFER;
+	}
+
+	if (IS_ERR(channel)) {
+		ret = PTR_ERR(channel);
+		icnss_pr_err("Not able to get VADC dev, VBATT monitoring is disabled: %d\n",
+			     ret);
+		return ret;
+	}
+
+	priv->adc_tm_dev = adc_tm_dev;
+	priv->channel = channel;
+
+	return 0;
+}
+
+#ifdef VENDOR_EDIT
+//Laixin@PSW.CN.WiFi.Basic.Switch.1069763, 2018/08/08
+//Add for: check fw status for switch issue
+static void icnss_create_fw_state_kobj(void);
+static ssize_t icnss_show_fw_ready(struct device_driver *driver, char *buf)
+{
+	bool firmware_ready = icnss_is_fw_ready();
+	return sprintf(buf, "%s", (firmware_ready ? "ready" : "not_ready"));
+}
+
+struct driver_attribute fw_ready_attr = {
+	.attr = {
+		.name = "firmware_ready",
+		.mode = S_IRUGO,
+	},
+	.show = icnss_show_fw_ready,
+	//read only so we don't need to impl store func
+};
+#endif /* VENDOR_EDIT */
+
 static int icnss_probe(struct platform_device *pdev)
 {
 	int ret = 0;
@@ -3172,6 +3371,13 @@ static int icnss_probe(struct platform_device *pdev)
 	priv->pdev = pdev;
 
 	priv->vreg_info = icnss_vreg_info;
+
+	if (of_property_read_bool(pdev->dev.of_node, "qcom,icnss-adc_tm")) {
+		ret = icnss_get_vbatt_info(priv);
+		if (ret == -EPROBE_DEFER)
+			goto out;
+		priv->vbatt_supported = true;
+	}
 
 	for (i = 0; i < ICNSS_VREG_INFO_SIZE; i++) {
 		ret = icnss_get_vreg_info(dev, &priv->vreg_info[i]);
@@ -3341,6 +3547,12 @@ static int icnss_probe(struct platform_device *pdev)
 	penv = priv;
 
 	init_completion(&priv->unblock_shutdown);
+
+	#ifdef VENDOR_EDIT
+	//Laixin@PSW.CN.WiFi.Basic.Switch.1069763, 2018/08/08
+	//Add for: check fw status for switch issue
+	icnss_create_fw_state_kobj();
+	#endif /* VENDOR_EDIT */
 
 	icnss_pr_info("Platform driver probed successfully\n");
 
@@ -3530,6 +3742,16 @@ static struct platform_driver icnss_driver = {
 		.of_match_table = icnss_dt_match,
 	},
 };
+
+#ifdef VENDOR_EDIT
+//Laixin@PSW.CN.WiFi.Basic.Switch.1069763, 2018/08/08
+//Add for: check fw status for switch issue
+static void icnss_create_fw_state_kobj(void) {
+	if (driver_create_file(&(icnss_driver.driver), &fw_ready_attr)) {
+		icnss_pr_info("failed to create %s", fw_ready_attr.attr.name);
+	}
+}
+#endif /* VENDOR_EDIT */
 
 static int __init icnss_initialize(void)
 {

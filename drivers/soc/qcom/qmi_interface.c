@@ -454,7 +454,6 @@ static void qmi_handle_net_reset(struct qmi_handle *qmi)
 	struct sockaddr_qrtr sq;
 	struct qmi_service *svc;
 	struct socket *sock;
-	long timeo = qmi->sock->sk->sk_sndtimeo;
 
 	sock = qmi_sock_create(qmi, &sq);
 	if (IS_ERR(sock))
@@ -474,7 +473,6 @@ static void qmi_handle_net_reset(struct qmi_handle *qmi)
 	sock_release(qmi->sock);
 	qmi->sock = sock;
 	qmi->sq = sq;
-	qmi->sock->sk->sk_sndtimeo = timeo;
 	mutex_unlock(&qmi->sock_lock);
 
 	list_for_each_entry(svc, &qmi->lookups, list_node)
@@ -507,24 +505,27 @@ static void qmi_handle_message(struct qmi_handle *qmi,
 	if (hdr->type == QMI_RESPONSE) {
 		mutex_lock(&qmi->txn_lock);
 		txn = idr_find(&qmi->txns, hdr->txn_id);
-		if (txn)
-			mutex_lock(&txn->lock);
+#ifdef VENDOR_EDIT
+       // Benzhong.Hou@PSW.kernel.drv 20190816 modify for merge CR#2470638
+		/* Ignore unexpected responses */
+		if (!txn) {
+			mutex_unlock(&qmi->txn_lock);
+			return;
+		}
+		mutex_lock(&txn->lock);
+		if (txn->dest && txn->ei) {
+			ret = qmi_decode_message(buf, len, txn->ei, txn->dest);
+			if (ret < 0)
+				pr_err("failed to decode incoming message\n");
+
+			txn->result = ret;
+			complete(&txn->completion);
+		} else {
+			qmi_invoke_handler(qmi, sq, txn, buf, len);
+		}
+		mutex_unlock(&txn->lock);
 		mutex_unlock(&qmi->txn_lock);
-	}
-
-	if (txn && txn->dest && txn->ei) {
-		ret = qmi_decode_message(buf, len, txn->ei, txn->dest);
-		if (ret < 0)
-			pr_err("failed to decode incoming message\n");
-
-		txn->result = ret;
-		complete(&txn->completion);
-
-		mutex_unlock(&txn->lock);
-	} else if (txn) {
-		qmi_invoke_handler(qmi, sq, txn, buf, len);
-
-		mutex_unlock(&txn->lock);
+#endif/* VENDOR_EDIT */
 	} else {
 		/* Create a txn based on the txn_id of the incoming message */
 		memset(&tmp_txn, 0, sizeof(tmp_txn));
@@ -624,21 +625,6 @@ static struct socket *qmi_sock_create(struct qmi_handle *qmi,
 
 	return sock;
 }
-
-/**
- * qmi_set_sndtimeo() - set the sk_sndtimeo of the qmi handle
- * @qmi:	QMI client handle
- * @timeo:	timeout in jiffies.
- *
- * This sets the timeout for the blocking socket send in qmi send.
- */
-void qmi_set_sndtimeo(struct qmi_handle *qmi, long timeo)
-{
-	mutex_lock(&qmi->sock_lock);
-	qmi->sock->sk->sk_sndtimeo = timeo;
-	mutex_unlock(&qmi->sock_lock);
-}
-EXPORT_SYMBOL(qmi_set_sndtimeo);
 
 /**
  * qmi_handle_init() - initialize a QMI client handle

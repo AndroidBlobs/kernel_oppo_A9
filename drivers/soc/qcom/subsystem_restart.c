@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -620,6 +620,22 @@ static int for_each_subsys_device(struct subsys_device **list,
 	return 0;
 }
 
+static void subsys_notif_uevent(struct subsys_desc *desc,
+				enum subsys_notif_type notif)
+{
+	char *envp[3];
+
+	if (notif == SUBSYS_AFTER_POWERUP) {
+		envp[0] = kasprintf(GFP_KERNEL, "SUBSYSTEM=%s", desc->name);
+		envp[1] = kasprintf(GFP_KERNEL, "NOTIFICATION=%d", notif);
+		envp[2] = NULL;
+		kobject_uevent_env(&desc->dev->kobj, KOBJ_CHANGE, envp);
+		pr_debug("%s %s sent\n", envp[0], envp[1]);
+		kfree(envp[1]);
+		kfree(envp[0]);
+	}
+}
+
 static void notify_each_subsys_device(struct subsys_device **list,
 		unsigned int count,
 		enum subsys_notif_type notif, void *data)
@@ -666,6 +682,7 @@ static void notify_each_subsys_device(struct subsys_device **list,
 								&notif_data);
 		cancel_timeout(dev->desc);
 		trace_pil_notif("after_send_notif", notif, dev->desc->fw_name);
+		subsys_notif_uevent(dev->desc, notif);
 	}
 }
 
@@ -838,6 +855,26 @@ struct subsys_device *find_subsys_device(const char *str)
 }
 EXPORT_SYMBOL(find_subsys_device);
 
+#ifdef VENDOR_EDIT
+/* Fuchun.Liao@BSP.CHG.Basic 2018/11/27 modify for rf cable detect */
+int op_restart_modem(void)
+{
+	struct subsys_device *subsys = find_subsys_device("modem");
+	int restart_level;
+
+	if (!subsys)
+		return -ENODEV;
+	pr_err("%s\n", __func__);
+	restart_level = subsys->restart_level;
+	subsys->restart_level = RESET_SUBSYS_COUPLED;
+	if (subsystem_restart("modem") == -ENODEV)
+		pr_err("%s: SSR call modem failed\n", __func__);
+	subsys->restart_level = restart_level;
+	return 0;
+}
+EXPORT_SYMBOL(op_restart_modem);
+#endif /* VENDOR_EDIT */
+
 static int subsys_start(struct subsys_device *subsys)
 {
 	int ret;
@@ -965,7 +1002,7 @@ void *__subsystem_get(const char *name, const char *fw_name)
 		goto err_module;
 	}
 
-	subsys_d = subsystem_get(subsys->desc->pon_depends_on);
+	subsys_d = subsystem_get(subsys->desc->depends_on);
 	if (IS_ERR(subsys_d)) {
 		retval = subsys_d;
 		goto err_depends;
@@ -1044,10 +1081,6 @@ void subsystem_put(void *subsystem)
 	if (IS_ERR_OR_NULL(subsys))
 		return;
 
-	subsys_d = find_subsys_device(subsys->desc->poff_depends_on);
-	if (subsys_d)
-		subsystem_put(subsys_d);
-
 	track = subsys_get_track(subsys);
 	mutex_lock(&track->lock);
 	if (WARN(!subsys->count, "%s: %s: Reference count mismatch\n",
@@ -1061,6 +1094,11 @@ void subsystem_put(void *subsystem)
 	}
 	mutex_unlock(&track->lock);
 
+	subsys_d = find_subsys_device(subsys->desc->depends_on);
+	if (subsys_d) {
+		subsystem_put(subsys_d);
+		put_device(&subsys_d->dev);
+	}
 	module_put(subsys->owner);
 	put_device(&subsys->dev);
 	return;
@@ -1652,14 +1690,6 @@ static int subsys_parse_devicetree(struct subsys_desc *desc)
 		return PTR_ERR(order);
 	}
 
-	if (of_property_read_string(pdev->dev.of_node, "qcom,pon-depends-on",
-				&desc->pon_depends_on))
-		pr_debug("pon-depends-on not set for %s\n", desc->name);
-
-	if (of_property_read_string(pdev->dev.of_node, "qcom,poff-depends-on",
-				&desc->poff_depends_on))
-		pr_debug("poff-depends-on not set for %s\n", desc->name);
-
 	return 0;
 }
 
@@ -1807,6 +1837,16 @@ struct subsys_device *subsys_register(struct subsys_desc *desc)
 	subsys->notif_state = -1;
 	subsys->desc->sysmon_pid = -1;
 	subsys->desc->state = NULL;
+#ifdef VENDOR_EDIT
+	/*YiXue.Ge@PSW.BSP.Kernel.Driver,2017/05/15,
+	 * Add for init subsyst restart level as RESET_SUBSYS_COUPLED at mp build
+	 */
+	#ifndef CONFIG_OPPO_DAILY_BUILD
+		#ifndef CONFIG_OPPO_SPECIAL_BUILD
+		subsys->restart_level = RESET_SUBSYS_COUPLED;
+		#endif
+	#endif
+#endif
 	strlcpy(subsys->desc->fw_name, desc->name,
 			sizeof(subsys->desc->fw_name));
 

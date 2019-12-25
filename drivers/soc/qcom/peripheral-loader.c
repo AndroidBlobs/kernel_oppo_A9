@@ -432,6 +432,29 @@ static void print_aux_minidump_tocs(struct pil_desc *desc)
 	}
 }
 
+#ifdef VENDOR_EDIT
+//GaoTing.Gan@PSW.MultiMedia.MediaServer, 2019/03/06, Add for record ramdump
+//Wentiam.Mai@PSW.NW.EM.1213568, 2018/05/09
+//Add for customized subsystem ramdump
+#define CAUSENAME_SIZE 128
+unsigned int BKDRHash(char* str, unsigned int len)
+{
+    unsigned int seed = 131; /* 31 131 1313 13131 131313 etc.. */
+    unsigned int hash = 0;
+    unsigned int i    = 0;
+
+    if (str == NULL) {
+        return 0;
+    }
+
+    for(i = 0; i < len; str++, i++) {
+        hash = (hash * seed) + (*str);
+    }
+
+    return hash;
+}
+#endif /*VENDOR_EDIT*/
+
 /**
  * pil_do_ramdump() - Ramdump an image
  * @desc: descriptor from pil_desc_init()
@@ -449,6 +472,16 @@ int pil_do_ramdump(struct pil_desc *desc,
 	int count = 0, ret;
 
 	if (desc->minidump_ss) {
+#ifdef VENDOR_EDIT
+	//Wentiam.Mai@PSW.NW.EM.1248599, 2018/01/25
+	//Add for customized subsystem ramdump to skip generate dump cause by SAU
+	if (SKIP_GENERATE_RAMDUMP) {
+		pil_err(desc, "%s: Skip ramdump cuase by ap normal trigger.\n %s",
+			__func__, desc->name);
+		SKIP_GENERATE_RAMDUMP = false;
+		return -1;
+	}
+#endif
 		pr_debug("Minidump : md_ss_toc->md_ss_toc_init is 0x%x\n",
 			(unsigned int)desc->minidump_ss->md_ss_toc_init);
 		pr_debug("Minidump : md_ss_toc->md_ss_enable_status is 0x%x\n",
@@ -471,12 +504,20 @@ int pil_do_ramdump(struct pil_desc *desc,
 			(desc->minidump_ss->md_ss_toc_init == true) &&
 			(desc->minidump_ss->md_ss_enable_status ==
 				MD_SS_ENABLED)) {
+			#ifndef VENDOR_EDIT
+			//Wentiam.Mai@PSW.NW.EM.1389836, 2018/05/22
+			//Add for skip mini dump encryption
 			if (desc->minidump_ss->encryption_status ==
 			    MD_SS_ENCR_DONE) {
-				pr_debug("Dumping Minidump for %s\n",
+				pr_info("Dumping Minidump for %s\n",
 					desc->name);
 				return pil_do_minidump(desc, minidump_dev);
 			}
+			#else
+				pr_debug("Minidump : Dumping for %s\n",
+					desc->name);
+				return pil_do_minidump(desc, minidump_dev);
+			#endif
 			pr_debug("Minidump aborted for %s\n", desc->name);
 			return -EINVAL;
 		}

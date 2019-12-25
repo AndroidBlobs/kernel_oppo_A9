@@ -354,10 +354,11 @@ static struct msm_soc_info cpu_of_id[] = {
 	[373] = {MSM_CPU_QCS403, "QCS403"},
 
 	/* qcs401 ID */
-	[371] = {MSM_CPU_QCS401, "QCS401"},
+	[372] = {MSM_CPU_QCS401, "QCS401"},
 
 	/* sdxprairie ID */
 	[357] = {SDX_CPU_SDXPRAIRIE, "SDXPRAIRIE"},
+	[368] = {SDX_CPU_SDXPRAIRIE, "SDXPRAIRIE"},
 
 	/* sdmmagpie ID */
 	[365] = {MSM_CPU_SDMMAGPIE, "SDMMAGPIE"},
@@ -365,9 +366,24 @@ static struct msm_soc_info cpu_of_id[] = {
 	/* sdmmagpiep ID */
 	[366] = {MSM_CPU_SDMMAGPIEP, "SDMMAGPIEP"},
 
-	/* trinket ID */
-	[394] = {MSM_CPU_TRINKET, "TRINKET"},
+	/* sa6155P ID */
+	[377] = {MSM_CPU_SA6155P, "SA6155P"},
 
+	/* sa4155P ID */
+	[380] = {MSM_CPU_SA4155P, "SA4155P"},
+
+	/* sa6155 ID */
+	[384] = {MSM_CPU_SA6155, "SA6155"},
+#if defined(VENDOR_EDIT) && defined(CONFIG_CONFIDENTIAL_VERSION)
+/*Fanhong.Kong@PSW.BSP.CHG, 2019-02-12
+ *Obscure the cpu model number in confidential version
+ */
+	/* trinket ID */
+	[394] = {MSM_CPU_TRINKET, "SM6150"},
+#else
+	/* trinket ID */
+	[394] = {MSM_CPU_TRINKET, "SDM665"},
+#endif /* VENDOR_EDIT */
 	/* Uninitialized IDs are not known to run Linux.
 	 * MSM_CPU_UNKNOWN is set to 0 to ensure these IDs are
 	 * considered as unknown CPU.
@@ -1265,7 +1281,7 @@ static void * __init setup_dummy_socinfo(void)
 		strlcpy(dummy_socinfo.build_id, "qcs403 - ",
 		sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_qcs401()) {
-		dummy_socinfo.id = 371;
+		dummy_socinfo.id = 372;
 		strlcpy(dummy_socinfo.build_id, "qcs401 - ",
 		sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_sdxprairie()) {
@@ -1279,6 +1295,18 @@ static void * __init setup_dummy_socinfo(void)
 	} else if (early_machine_is_sdmmagpiep()) {
 		dummy_socinfo.id = 366;
 		strlcpy(dummy_socinfo.build_id, "sdmmagpiep - ",
+		sizeof(dummy_socinfo.build_id));
+	} else if (early_machine_is_sa6155p()) {
+		dummy_socinfo.id = 377;
+		strlcpy(dummy_socinfo.build_id, "sa6155p - ",
+		sizeof(dummy_socinfo.build_id));
+	} else if (early_machine_is_sa4155p()) {
+		dummy_socinfo.id = 380;
+		strlcpy(dummy_socinfo.build_id, "sa4155p - ",
+		sizeof(dummy_socinfo.build_id));
+	} else if (early_machine_is_sa6155()) {
+		dummy_socinfo.id = 384;
+		strlcpy(dummy_socinfo.build_id, "sa6155 - ",
 		sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_trinket()) {
 		dummy_socinfo.id = 394;
