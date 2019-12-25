@@ -38,7 +38,7 @@ static const struct address_space_operations swap_aops = {
 
 struct address_space *swapper_spaces[MAX_SWAPFILES] __read_mostly;
 static unsigned int nr_swapper_spaces[MAX_SWAPFILES] __read_mostly;
-bool enable_vma_readahead __read_mostly = true;
+bool enable_vma_readahead __read_mostly;
 
 #define SWAP_RA_WIN_SHIFT	(PAGE_SHIFT / 2)
 #define SWAP_RA_HITS_MASK	((1UL << SWAP_RA_WIN_SHIFT) - 1)
@@ -809,7 +809,7 @@ static ssize_t vma_ra_enabled_store(struct kobject *kobj,
 				      const char *buf, size_t count)
 {
 	if (!strncmp(buf, "true", 4) || !strncmp(buf, "1", 1))
-		enable_vma_readahead = true;
+		enable_vma_readahead = false;
 	else if (!strncmp(buf, "false", 5) || !strncmp(buf, "0", 1))
 		enable_vma_readahead = false;
 	else
