@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,6 +25,7 @@
 #include <linux/interrupt.h>
 #include <linux/timer.h>
 #include <linux/pm_opp.h>
+#include <linux/cpufreq.h>
 #include <linux/cpu_cooling.h>
 #include <linux/atomic.h>
 #include <linux/regulator/consumer.h>
@@ -96,11 +97,16 @@ struct limits_dcvs_hw {
 	struct device_attribute lmh_freq_attr;
 	struct list_head list;
 	bool is_irq_enabled;
+	bool is_plat_mit_disabled;
 	struct mutex access_lock;
 	struct __limits_cdev_data *cdev_data;
 	uint32_t cdev_registered;
 	struct regulator *isens_reg[2];
 	struct work_struct cdev_register_work;
+#ifdef VENDOR_EDIT
+	uint32_t dump_thres;
+	uint32_t dump_cnt;
+#endif
 };
 
 LIST_HEAD(lmh_dcvs_hw_list);
@@ -130,6 +136,29 @@ static void limits_dcvs_get_freq_limits(struct limits_dcvs_hw *hw)
 		idx++;
 	}
 }
+
+#ifdef VENDOR_EDIT
+static void lmh_dump_tz_temp(struct limits_dcvs_hw *hw)
+{
+	struct thermal_cooling_device *cdev;
+	int cpu, idx = 0;
+	struct thermal_instance *instance;
+
+	if (NULL == hw) {
+		pr_err("lmh device is invalid!\n");
+		return;
+	}
+
+	for_each_cpu(cpu, &hw->core_map) {
+		cdev = hw->cdev_data[idx].cdev;
+		list_for_each_entry(instance, &cdev->thermal_instances, cdev_node) {
+			pr_info("cdev%d: zone%d->temp=%d, type=%s\n", idx, instance->tz->id,
+				instance->tz->temperature, instance->tz->type);
+		}
+		idx++;
+	}
+}
+#endif
 
 static unsigned long limits_mitigation_notify(struct limits_dcvs_hw *hw)
 {
@@ -183,6 +212,17 @@ static unsigned long limits_mitigation_notify(struct limits_dcvs_hw *hw)
 	sched_update_cpu_freq_min_max(&hw->core_map, 0, max_limit);
 	pr_debug("CPU:%d max limit:%lu\n", cpumask_first(&hw->core_map),
 			max_limit);
+#ifdef VENDOR_EDIT
+	if (max_limit < hw->dump_thres) {
+		pr_info("CPU:%d max limit:%lu\n", cpumask_first(&hw->core_map),
+			max_limit);
+		hw->dump_cnt++;
+		if (!(hw->dump_cnt % 100)) {
+			lmh_dump_tz_temp(hw);
+			hw->dump_cnt = 0;
+		}
+	}
+#endif
 	trace_lmh_dcvs_freq(cpumask_first(&hw->core_map), max_limit);
 
 notify_exit:
@@ -369,6 +409,10 @@ static int lmh_set_max_limit(int cpu, u32 freq)
 	ret = limits_dcvs_write(hw->affinity, LIMITS_SUB_FN_THERMAL,
 				  LIMITS_FREQ_CAP, max_freq,
 				  (max_freq == U32_MAX) ? 0 : 1, 1);
+#ifdef VENDOR_EDIT
+	pr_info("affinity:%x, max_freq:%u, ret:%d\n", hw->affinity,
+			max_freq, ret);
+#endif
 	lmh_dcvs_notify(hw);
 	mutex_unlock(&hw->access_lock);
 
@@ -408,6 +452,8 @@ static void register_cooling_device(struct work_struct *work)
 {
 	struct limits_dcvs_hw *hw;
 	unsigned int cpu = 0, idx = 0;
+	struct device_node *cpu_node;
+	struct cpufreq_policy *policy;
 
 	mutex_lock(&lmh_dcvs_list_access);
 	list_for_each_entry(hw, &lmh_dcvs_hw_list, list) {
@@ -424,12 +470,33 @@ static void register_cooling_device(struct work_struct *work)
 				idx++;
 				continue;
 			}
-			cpumask_set_cpu(cpu, &cpu_mask);
 			hw->cdev_data[idx].max_freq = U32_MAX;
 			hw->cdev_data[idx].min_freq = 0;
-			hw->cdev_data[idx].cdev =
+
+			if (!hw->is_plat_mit_disabled) {
+				cpumask_set_cpu(cpu, &cpu_mask);
+				hw->cdev_data[idx].cdev =
 					cpufreq_platform_cooling_register(
 							&cpu_mask, &cd_ops);
+			} else {
+				cpu_node = of_cpu_device_node_get(cpu);
+				if (WARN_ON(!cpu_node)) {
+					hw->cdev_data[idx].cdev = NULL;
+					continue;
+				}
+
+				policy = cpufreq_cpu_get(cpu);
+				if (!policy) {
+					pr_err("No policy for cpu%d\n", cpu);
+					hw->cdev_data[idx].cdev = NULL;
+					of_node_put(cpu_node);
+					continue;
+				}
+				hw->cdev_data[idx].cdev =
+					of_cpufreq_cooling_register(cpu_node,
+						policy);
+				of_node_put(cpu_node);
+			}
 			if (IS_ERR_OR_NULL(hw->cdev_data[idx].cdev)) {
 				pr_err("CPU:%u cdev register error:%ld\n",
 					cpu, PTR_ERR(hw->cdev_data[idx].cdev));
@@ -530,6 +597,9 @@ static int limits_dcvs_probe(struct platform_device *pdev)
 	struct device_node *dn = pdev->dev.of_node;
 	struct device_node *cpu_node, *lmh_node;
 	uint32_t request_reg, clear_reg, min_reg;
+#ifdef VENDOR_EDIT
+	uint32_t dump_thres;
+#endif
 	int cpu, idx = 0;
 	cpumask_t mask = { CPU_BITS_NONE };
 	const __be32 *addr;
@@ -588,6 +658,10 @@ static int limits_dcvs_probe(struct platform_device *pdev)
 		return -EINVAL;
 	};
 
+	/* Check whether platform mitigation needs to enable or not */
+	hw->is_plat_mit_disabled = of_property_read_bool(dn,
+				"qcom,plat-mitigation-disable");
+
 	addr = of_get_address(dn, 0, NULL, NULL);
 	if (!addr) {
 		pr_err("Property llm-base-addr not found\n");
@@ -616,8 +690,14 @@ static int limits_dcvs_probe(struct platform_device *pdev)
 			affinity);
 	tzdev = thermal_zone_of_sensor_register(&pdev->dev, 0, hw,
 			&limits_sensor_ops);
-	if (IS_ERR_OR_NULL(tzdev))
-		return PTR_ERR(tzdev);
+	if (IS_ERR_OR_NULL(tzdev)) {
+		/*
+		 * Ignore error in case if thermal zone devicetree node is not
+		 * defined for this lmh hardware.
+		 */
+		if (!tzdev || PTR_ERR(tzdev) != -ENODEV)
+			return PTR_ERR(tzdev);
+	}
 
 	hw->min_freq_reg = devm_ioremap(&pdev->dev, min_reg, 0x4);
 	if (!hw->min_freq_reg) {
@@ -648,7 +728,7 @@ static int limits_dcvs_probe(struct platform_device *pdev)
 	hw->is_irq_enabled = true;
 	ret = devm_request_threaded_irq(&pdev->dev, hw->irq_num, NULL,
 		lmh_dcvs_handle_isr, IRQF_TRIGGER_HIGH | IRQF_ONESHOT
-		| IRQF_NO_SUSPEND, hw->sensor_name, hw);
+		| IRQF_NO_SUSPEND | IRQF_SHARED, hw->sensor_name, hw);
 	if (ret) {
 		pr_err("Error registering for irq. err:%d\n", ret);
 		ret = 0;
@@ -658,6 +738,18 @@ static int limits_dcvs_probe(struct platform_device *pdev)
 	hw->lmh_freq_attr.attr.name = "lmh_freq_limit";
 	hw->lmh_freq_attr.show = lmh_freq_limit_show;
 	hw->lmh_freq_attr.attr.mode = 0444;
+
+#ifdef VENDOR_EDIT
+	ret = of_property_read_u32(dn, "dump_thres", &dump_thres);
+	if (ret) {
+		pr_err("lmh%d: dump_thres=%u. Doesn't support dump!\n",
+			affinity, hw->dump_thres);
+	} else {
+		pr_info("lmh%d: dump_thres=%u\n", affinity, dump_thres);
+		hw->dump_thres = dump_thres;
+	}
+#endif
+
 	device_create_file(&pdev->dev, &hw->lmh_freq_attr);
 
 probe_exit:
