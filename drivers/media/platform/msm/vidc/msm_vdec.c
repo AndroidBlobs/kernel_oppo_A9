@@ -816,26 +816,8 @@ int msm_vdec_inst_init(struct msm_vidc_inst *inst)
 	inst->bufq[CAPTURE_PORT].num_planes = 1;
 	inst->prop.fps = DEFAULT_FPS;
 	inst->clk_data.operating_rate = 0;
-	if (core->resources.decode_batching) {
-		struct msm_vidc_inst *temp;
-
+	if (core->resources.decode_batching)
 		inst->batch.size = MAX_DEC_BATCH_SIZE;
-		inst->decode_batching = true;
-
-		mutex_lock(&core->lock);
-		list_for_each_entry(temp, &core->instances, list) {
-			if (temp != inst &&
-				temp->state != MSM_VIDC_CORE_INVALID &&
-				is_decode_session(temp) &&
-				!is_thumbnail_session(temp)) {
-				inst->decode_batching = false;
-				dprintk(VIDC_DBG,
-					"decode-batching disabled in multiple sessions\n");
-				break;
-			}
-		}
-		mutex_unlock(&core->lock);
-	}
 
 	/* By default, initialize CAPTURE port to UBWC YUV format */
 	fmt = msm_comm_get_pixel_fmt_fourcc(vdec_formats,
@@ -1042,6 +1024,11 @@ int msm_vdec_s_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 		pdata = &property_val;
 		dprintk(VIDC_DBG, "Setting secure mode to: %d\n",
 				!!(inst->flags & VIDC_SECURE));
+		if (msm_comm_check_for_inst_overload(inst->core)) {
+			dprintk(VIDC_ERR,
+				"Secure Instance reached Max limit, rejecting session\n");
+			return -ENOTSUPP;
+		}
 		break;
 	case V4L2_CID_MPEG_VIDC_VIDEO_EXTRADATA:
 		property_id = HAL_PARAM_INDEX_EXTRADATA;
@@ -1224,7 +1211,8 @@ int msm_vdec_s_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 				HAL_BUFFER_OUTPUT2);
 			if (rc) {
 				dprintk(VIDC_ERR,
-					"%s: Failed to set opb buffer count to FW\n");
+					"%s: Failed to set opb buffer count to FW\n",
+					__func__);
 				break;
 			}
 
