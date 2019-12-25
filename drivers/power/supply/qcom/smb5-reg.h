@@ -22,7 +22,6 @@
 #define DCIN_BASE	0x1400
 #define TYPEC_BASE	0X1500
 #define MISC_BASE	0x1600
-#define MISC_PBS_BASE	0x7500
 
 #define PERPH_TYPE_OFFSET	0x04
 #define TYPE_MASK		GENMASK(7, 0)
@@ -64,6 +63,21 @@ enum {
 #define BAT_TEMP_STATUS_TOO_HOT_AFP_BIT		BIT(1)
 #define BAT_TEMP_STATUS_TOO_COLD_AFP_BIT	BIT(0)
 
+#ifdef VENDOR_EDIT
+/* tongfeng.Huang@BSP.CHG.Basic, 2018/09/27,  Add for charger */
+#define BATTERY_CHARGER_STATUS_8_REG			(CHGR_BASE + 0x0E)
+//#define PRE_FAST_BIT					BIT(7)
+//#define PRE_FULLON_BIT					BIT(6)
+//#define PRE_RCHG_BIT					BIT(5)
+//#define PRE_INHIBIT_BIT					BIT(3)
+//#define PRE_OVRV_BIT					BIT(4)
+#define PRE_TERM_BIT					BIT(2)
+#define BAT_ID_BMISS_CMP_BIT				BIT(1)
+//#define THERM_CMP_BIT					BIT(0)
+#endif
+
+
+
 #define CHARGING_ENABLE_CMD_REG			(CHGR_BASE + 0x42)
 #define CHARGING_ENABLE_CMD_BIT			BIT(0)
 
@@ -78,6 +92,12 @@ enum {
 
 #define CHGR_FAST_CHARGE_CURRENT_CFG_REG	(CHGR_BASE + 0x61)
 
+#ifdef VENDOR_EDIT
+/*Kun.Zhang  PWS.BSP.CHG  2019/04/08  add for charge*/
+#define TCCC_CHARGE_CURRENT_TERMINATION_CFG_REG		(CHGR_BASE + 0x63)
+#define TCCC_CHARGE_CURRENT_TERMINATION_SETTING_MASK	GENMASK(3, 0)
+#endif
+
 #define CHGR_ADC_ITERM_UP_THD_MSB_REG		(CHGR_BASE + 0x67)
 #define CHGR_ADC_ITERM_UP_THD_LSB_REG		(CHGR_BASE + 0x68)
 #define CHGR_ADC_ITERM_LO_THD_MSB_REG		(CHGR_BASE + 0x69)
@@ -86,11 +106,6 @@ enum {
 #define CHGR_NO_SAMPLE_TERM_RCHG_CFG_REG	(CHGR_BASE + 0x6B)
 #define NO_OF_SAMPLE_FOR_RCHG_SHIFT		2
 #define NO_OF_SAMPLE_FOR_RCHG			GENMASK(3, 2)
-
-#define CHGR_ADC_TERM_CFG_REG			(CHGR_BASE + 0x6C)
-#define TERM_BASED_ON_SYNC_CONV_OR_SAMPLE_CNT	BIT(0)
-#define TERM_BASED_ON_SYNC_CONV			0
-#define TERM_BASED_ON_SAMPLE_CNT		1
 
 #define CHGR_FLOAT_VOLTAGE_CFG_REG		(CHGR_BASE + 0x70)
 
@@ -108,6 +123,11 @@ enum {
 #define CHGR_ADC_RECHARGE_THRESHOLD_LSB_REG	(CHGR_BASE + 0x7F)
 
 #define JEITA_EN_CFG_REG			(CHGR_BASE + 0x90)
+
+#ifdef VENDOR_EDIT /*zhangkun@BSP.CHG.Basic, 2019/03/230 Add for disable JEITA*/
+#define JEITA_EN_HARDLIMIT_BIT	BIT(4) 
+#endif
+
 #define JEITA_EN_HOT_SL_FCV_BIT			BIT(3)
 #define JEITA_EN_COLD_SL_FCV_BIT		BIT(2)
 #define JEITA_EN_HOT_SL_CCC_BIT			BIT(1)
@@ -153,12 +173,12 @@ enum {
 
 #define DCDC_OTG_CURRENT_LIMIT_CFG_REG		(DCDC_BASE + 0x52)
 
+#ifdef VENDOR_EDIT /*zhangkun@BSP.CHG.Basic, 2019/04/27 Add for disable JEITA*/
+#define DCDC_OTG_CURRENT_LIMIT_1000MA_BIT      BIT(2) 
+#endif
+
 #define DCDC_OTG_CFG_REG			(DCDC_BASE + 0x53)
 #define OTG_EN_SRC_CFG_BIT			BIT(1)
-
-#define OTG_FAULT_CONDITION_CFG_REG		(DCDC_BASE + 0x56)
-#define USBIN_MID_COMP_FAULT_EN_BIT		BIT(5)
-#define USBIN_COLLAPSE_FAULT_EN_BIT		BIT(4)
 
 #define DCDC_CFG_REF_MAX_PSNS_REG		(DCDC_BASE + 0x8C)
 
@@ -293,6 +313,7 @@ enum {
 #define HVDCP_EN_BIT				BIT(2)
 
 #define USBIN_OPTIONS_2_CFG_REG			(USBIN_BASE + 0x63)
+#define DCD_TIMEOUT_SEL_BIT			BIT(5)
 #define FLOAT_OPTIONS_MASK			GENMASK(2, 0)
 #define FLOAT_DIS_CHGING_CFG_BIT		BIT(2)
 #define SUSPEND_FLOAT_CFG_BIT			BIT(1)
@@ -312,6 +333,16 @@ enum {
 
 #define USBIN_AICL_OPTIONS_CFG_REG		(USBIN_BASE + 0x80)
 #define SUSPEND_ON_COLLAPSE_USBIN_BIT		BIT(7)
+#ifdef VENDOR_EDIT
+/* Yichun Chen@BSP.CHG.Basic, 2018/05/03, Add for OPPO_CHARGE */
+#define USBIN_AICL_HDC_EN_BIT			BIT(6)
+#define USBIN_AICL_START_AT_MAX_BIT		BIT(5)
+#define USBIN_AICL_RERUN_EN_BIT			BIT(4)
+#define USBIN_HV_COLLAPSE_RESPONSE_BIT		BIT(1)
+#define USBIN_LV_COLLAPSE_RESPONSE_BIT		BIT(0)
+#endif
+
+
 #define USBIN_AICL_PERIODIC_RERUN_EN_BIT	BIT(4)
 #define USBIN_AICL_ADC_EN_BIT			BIT(3)
 #define USBIN_AICL_EN_BIT			BIT(2)
@@ -344,7 +375,15 @@ enum {
  *  TYPEC Peripheral Registers  *
  ********************************/
 #define TYPE_C_SNK_STATUS_REG			(TYPEC_BASE + 0x06)
+#ifndef VENDOR_EDIT
+/*LiYue@BSP.CHG.Basic, 2019/08/24, support Debug Access Mode charging*/
 #define DETECTED_SRC_TYPE_MASK			GENMASK(3, 0)
+#else
+#define DETECTED_SRC_TYPE_MASK			GENMASK(6, 0)
+#define SNK_RP_STD_DAM_BIT			BIT(6)
+#define SNK_RP_1P5_DAM_BIT			BIT(5)
+#define SNK_RP_3P0_DAM_BIT			BIT(4)
+#endif
 #define SNK_RP_STD_BIT				BIT(3)
 #define SNK_RP_1P5_BIT				BIT(2)
 #define SNK_RP_3P0_BIT				BIT(1)
@@ -400,6 +439,12 @@ enum {
 #define TYPEC_CCOUT_BUFFER_EN_BIT		BIT(2)
 #define TYPEC_CCOUT_VALUE_BIT			BIT(1)
 #define TYPEC_CCOUT_SRC_BIT			BIT(0)
+
+#ifdef VENDOR_EDIT
+/*LiYue@BSP.CHG.Basic, 2019/08/24, support Debug Access Mode charging*/
+#define TYPE_C_DEBUG_ACCESS_SINK_REG		(TYPEC_BASE + 0x4A)
+#define TYPEC_DEBUG_ACCESS_SINK_MASK		GENMASK(4, 0)
+#endif
 
 #define DEBUG_ACCESS_SRC_CFG_REG		(TYPEC_BASE + 0x4C)
 #define EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT	BIT(0)
@@ -480,6 +525,12 @@ enum {
 #define DIE_TEMP_UB_BIT				BIT(1)
 #define DIE_TEMP_LB_BIT				BIT(0)
 
+#define SKIN_TEMP_STATUS_REG			(MISC_BASE + 0x08)
+#define SKIN_TEMP_SHDN_BIT			BIT(3)
+#define SKIN_TEMP_RST_BIT			BIT(2)
+#define SKIN_TEMP_UB_BIT			BIT(1)
+#define SKIN_TEMP_LB_BIT			BIT(0)
+
 #define CONNECTOR_TEMP_STATUS_REG		(MISC_BASE + 0x09)
 #define CONNECTOR_TEMP_SHDN_BIT			BIT(3)
 #define CONNECTOR_TEMP_RST_BIT			BIT(2)
@@ -542,7 +593,4 @@ enum {
 
 #define SMB_REG_H_THRESHOLD_MSB_REG		(MISC_BASE + 0XBC)
 
-/* SDAM regs */
-#define MISC_PBS_RT_STS_REG			(MISC_PBS_BASE + 0x10)
-#define PULSE_SKIP_IRQ_BIT			BIT(4)
 #endif /* __SMB5_CHARGER_REG_H */

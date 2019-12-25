@@ -20,6 +20,7 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/consumer.h>
 #include <linux/extcon.h>
+#include <linux/usb/class-dual-role.h>
 #include "storm-watch.h"
 
 enum print_reason {
@@ -58,6 +59,7 @@ enum print_reason {
 #define OTG_DELAY_VOTER			"OTG_DELAY_VOTER"
 #define USBIN_I_VOTER			"USBIN_I_VOTER"
 #define WEAK_CHARGER_VOTER		"WEAK_CHARGER_VOTER"
+#define OTG_VOTER			"OTG_VOTER"
 #define PL_FCC_LOW_VOTER		"PL_FCC_LOW_VOTER"
 #define WBC_VOTER			"WBC_VOTER"
 #define HW_LIMIT_VOTER			"HW_LIMIT_VOTER"
@@ -69,15 +71,19 @@ enum print_reason {
 #define JEITA_ARB_VOTER			"JEITA_ARB_VOTER"
 #define MOISTURE_VOTER			"MOISTURE_VOTER"
 #define HVDCP2_ICL_VOTER		"HVDCP2_ICL_VOTER"
-#define CHG_TERMINATION_VOTER		"CHG_TERMINATION_VOTER"
 #define AICL_THRESHOLD_VOTER		"AICL_THRESHOLD_VOTER"
 #define USBOV_DBC_VOTER			"USBOV_DBC_VOTER"
+#define CHG_TERMINATION_VOTER		"CHG_TERMINATION_VOTER"
 #define THERMAL_THROTTLE_VOTER		"THERMAL_THROTTLE_VOTER"
+#define VOUT_VOTER			"VOUT_VOTER"
+#define DR_SWAP_VOTER			"DR_SWAP_VOTER"
+#ifdef VENDOR_EDIT
+// Kun.Zhang@BSP.CHG.Basic, 2019/04/09  add for charge
+#define DEFAULT_100MA_VOTER     "DEFAULT_100MA_VOTER"
+#endif
 #define USB_SUSPEND_VOTER		"USB_SUSPEND_VOTER"
 #define CHARGER_TYPE_VOTER		"CHARGER_TYPE_VOTER"
 #define HDC_IRQ_VOTER			"HDC_IRQ_VOTER"
-#define VOUT_VOTER			"VOUT_VOTER"
-#define DETACH_DETECT_VOTER		"DETACH_DETECT_VOTER"
 
 #define BOOST_BACK_STORM_COUNT	3
 #define WEAK_CHG_STORM_COUNT	8
@@ -91,11 +97,20 @@ enum print_reason {
 #define SDP_100_MA			100000
 #define SDP_CURRENT_UA			500000
 #define CDP_CURRENT_UA			1500000
-#define DCP_CURRENT_UA			1500000
+#ifndef VENDOR_EDIT
+// wenbin.liu@BSP.CHG.Basic, 2017/11/27 
+// Delete for oppo dcp 2A 
+#define DCP_CURRENT_UA                  1500000
+#else
+#define DCP_CURRENT_UA                  2000000
+#endif
+
 #define HVDCP_CURRENT_UA		3000000
 #define TYPEC_DEFAULT_CURRENT_UA	900000
 #define TYPEC_MEDIUM_CURRENT_UA		1500000
 #define TYPEC_HIGH_CURRENT_UA		3000000
+
+#define ROLE_REVERSAL_DELAY_MS		2000
 
 enum smb_mode {
 	PARALLEL_MASTER = 0,
@@ -119,9 +134,9 @@ enum qc2_non_comp_voltage {
 enum {
 	BOOST_BACK_WA			= BIT(0),
 	SW_THERM_REGULATION_WA		= BIT(1),
-	CHG_TERMINATION_WA		= BIT(2),
 	WEAK_ADAPTER_WA			= BIT(2),
 	USBIN_OV_WA			= BIT(3),
+	CHG_TERMINATION_WA		= BIT(4),
 };
 
 enum jeita_cfg_stat {
@@ -207,7 +222,6 @@ enum smb_irq_index {
 	FLASH_STATE_CHANGE_IRQ,
 	TORCH_REQ_IRQ,
 	FLASH_EN_IRQ,
-	SDAM_STS_IRQ,
 	/* END */
 	SMB_IRQ_MAX,
 };
@@ -347,6 +361,10 @@ struct smb_iio {
 	struct iio_channel	*connector_temp_chan;
 	struct iio_channel	*sbux_chan;
 	struct iio_channel	*vph_v_chan;
+#ifdef VENDOR_EDIT
+    /* tongfeng.Huang@BSP.CHG.Basic, 2018/11/02,  Add for charging chargerid adc*/
+        struct iio_channel  *chgid_v_chan;
+#endif
 	struct iio_channel	*die_temp_chan;
 	struct iio_channel	*skin_temp_chan;
 	struct iio_channel	*smb_temp_chan;
@@ -371,7 +389,7 @@ struct smb_charger {
 	/* locks */
 	struct mutex		smb_lock;
 	struct mutex		ps_change_lock;
-	struct mutex		irq_status_lock;
+	struct mutex		dr_lock;
 
 	/* power supplies */
 	struct power_supply		*batt_psy;
@@ -379,10 +397,17 @@ struct smb_charger {
 	struct power_supply		*dc_psy;
 	struct power_supply		*bms_psy;
 	struct power_supply		*usb_main_psy;
+#ifdef VENDOR_EDIT
+/* Jianchao.Shi@BSP.CHG.Basic, 2017/03/07, sjc Add for charging*/
+	struct power_supply		*ac_psy;
+#endif
 	struct power_supply		*usb_port_psy;
 	struct power_supply		*wls_psy;
 	struct power_supply		*cp_psy;
 	enum power_supply_type		real_charger_type;
+
+	/* dual role class */
+	struct dual_role_phy_instance	*dual_role;
 
 	/* notifiers */
 	struct notifier_block	nb;
@@ -409,6 +434,7 @@ struct smb_charger {
 	struct votable		*icl_irq_disable_votable;
 	struct votable		*limited_irq_disable_votable;
 	struct votable		*hdc_irq_disable_votable;
+	struct votable		*temp_change_irq_disable_votable;
 
 	/* work */
 	struct work_struct	bms_update_work;
@@ -422,11 +448,15 @@ struct smb_charger {
 	struct delayed_work	pl_enable_work;
 	struct delayed_work	uusb_otg_work;
 	struct delayed_work	bb_removal_work;
+#ifdef VENDOR_EDIT
+/* Jianchao.Shi@BSP.CHG.Basic, 2017/03/25, sjc Add for charging */
+        struct delayed_work     chg_monitor_work;
+#endif
 	struct delayed_work	lpd_ra_open_work;
 	struct delayed_work	lpd_detach_work;
 	struct delayed_work	thermal_regulation_work;
 	struct delayed_work	usbov_dbc_work;
-	struct delayed_work	pr_swap_detach_work;
+	struct delayed_work	role_reversal_check;
 
 	struct alarm		lpd_recheck_timer;
 	struct alarm		moisture_protection_alarm;
@@ -459,6 +489,7 @@ struct smb_charger {
 	int			fake_batt_status;
 	bool			step_chg_enabled;
 	bool			sw_jeita_enabled;
+	bool			typec_legacy_use_rp_icl;
 	bool			is_hdc;
 	bool			chg_done;
 	int			connector_type;
@@ -500,8 +531,6 @@ struct smb_charger {
 	int			jeita_soft_fv[2];
 	bool			moisture_present;
 	bool			uusb_moisture_protection_enabled;
-	int			charge_full_cc;
-	int			cc_soc_ref;
 	bool			hw_die_temp_mitigation;
 	bool			hw_connector_mitigation;
 	bool			hw_skin_temp_mitigation;
@@ -511,9 +540,11 @@ struct smb_charger {
 	int			aicl_cont_threshold_mv;
 	int			default_aicl_cont_threshold_mv;
 	bool			aicl_max_reached;
+	int			charge_full_cc;
+	int			cc_soc_ref;
 	int			last_cc_soc;
+	int			dr_mode;
 	int			usbin_forced_max_uv;
-	int			init_thermal_ua;
 
 	/* workaround flag */
 	u32			wa_flags;
@@ -541,11 +572,83 @@ struct smb_charger {
 	u32			headroom_mode;
 	bool			flash_init_done;
 	bool			flash_active;
-	u32			irq_status;
-
 	/* wireless */
 	int			wireless_vout;
+#ifdef VENDOR_EDIT
+    /* Jianchao.Shi@BSP.CHG.Basic, 2017/08/10, sjc Add for charging */
+        int         pre_current_ma;
+        bool        is_dpdm_on_usb;
+        struct delayed_work divider_set_work;
+        struct work_struct  dpdm_set_work;
+#endif
+
+#ifdef VENDOR_EDIT
+    /* tongfeng.Huang@BSP.CHG.Basic, 2018/09/27, sjc Add for set uart pinctrl to read chargerID */   
+        int         shipmode_id_gpio;
+        struct pinctrl      *shipmode_id_pinctrl;
+        struct pinctrl_state    *shipmode_id_active;
+#endif
 };
+
+#ifdef VENDOR_EDIT
+/* Yichun Chen@BSP.CHG.Basic, 2018/04/25, Add for OPPO_CHARGE */
+enum skip_reason {
+	REASON_OTG_ENABLED	= BIT(0),
+	REASON_FLASH_ENABLED	= BIT(1)
+};
+
+struct smb_dt_props {
+	int			usb_icl_ua;
+	struct device_node	*revid_dev_node;
+	enum float_options	float_option;
+	int			chg_inhibit_thr_mv;
+	bool			no_battery;
+	bool			hvdcp_disable;
+	bool			hvdcp_autonomous;
+	bool			adc_based_aicl;
+	int			sec_charger_config;
+	int			auto_recharge_soc;
+	int			auto_recharge_vbat_mv;
+	int			wd_bark_time;
+	int			wd_snarl_time_cfg;
+	int			batt_profile_fcc_ua;
+	int			batt_profile_fv_uv;
+	int			term_current_src;
+	int			term_current_thresh_hi_ma;
+	int			term_current_thresh_lo_ma;
+	int			disable_suspend_on_collapse;
+};
+
+struct smb5 {
+	struct smb_charger	chg;
+	struct dentry		*dfs_root;
+	struct smb_dt_props	dt;
+};
+
+
+struct qcom_pmic {
+	struct smb5 *smb5_chip;
+	struct qpnp_vadc_chip	*pmi632_vadc_dev;
+	struct qpnp_vadc_chip	*pm8953_vadc_dev;
+
+	/* for complie*/
+	bool			otg_pulse_skip_dis;
+	int			pulse_cnt;
+	unsigned int	therm_lvl_sel;
+	bool			psy_registered;
+	int			usb_online;
+	
+	/* copy from msm8976_pmic begin */
+	int			bat_charging_state;
+	bool	 		suspending;
+	bool			aicl_suspend;
+	bool			usb_hc_mode;
+	int    		usb_hc_count;
+	bool			hc_mode_flag;
+	/* copy form msm8976_pmic end */
+};
+#endif /*VENDOR_EDIT*/
+
 
 int smblib_read(struct smb_charger *chg, u16 addr, u8 *val);
 int smblib_masked_write(struct smb_charger *chg, u16 addr, u8 mask, u8 val);
@@ -560,6 +663,15 @@ int smblib_get_aicl_cont_threshold(struct smb_chg_param *param, u8 val_raw);
 int smblib_enable_charging(struct smb_charger *chg, bool enable);
 int smblib_set_charge_param(struct smb_charger *chg,
 			    struct smb_chg_param *param, int val_u);
+#ifdef VENDOR_EDIT  /*zhangkun add for qpnp-smb5.c oppo*/
+int smblib_set_opt_switcher_freq(struct smb_charger *chg, int fsw_khz);
+int smblib_set_charge_param(struct smb_charger *chg,
+			    struct smb_chg_param *param, int val_u);
+irqreturn_t usbid_change_handler(int irq, void *data);
+const struct apsd_result *smblib_update_usb_type(struct smb_charger *chg);
+//bool oppo_usbid_check_is_gpio(struct oppo_chg_chip *chip);
+#endif      /*zhangkun add for qpnp-smb5.c oppo*/
+
 int smblib_set_usb_suspend(struct smb_charger *chg, bool suspend);
 int smblib_set_dc_suspend(struct smb_charger *chg, bool suspend);
 
@@ -601,7 +713,7 @@ irqreturn_t wdog_bark_irq_handler(int irq, void *data);
 irqreturn_t typec_or_rid_detection_change_irq_handler(int irq, void *data);
 irqreturn_t temp_change_irq_handler(int irq, void *data);
 irqreturn_t usbin_ov_irq_handler(int irq, void *data);
-irqreturn_t sdam_sts_change_irq_handler(int irq, void *data);
+
 int smblib_get_prop_input_suspend(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_get_prop_batt_present(struct smb_charger *chg,
@@ -646,8 +758,6 @@ int smblib_set_prop_dc_current_max(struct smb_charger *chg,
 int smblib_get_prop_dc_voltage_now(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_get_prop_dc_voltage_max(struct smb_charger *chg,
-				union power_supply_propval *val);
-int smblib_get_prop_voltage_wls_output(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_set_prop_voltage_wls_output(struct smb_charger *chg,
 				const union power_supply_propval *val);
@@ -725,6 +835,7 @@ int smblib_get_prop_pr_swap_in_progress(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_set_prop_pr_swap_in_progress(struct smb_charger *chg,
 				const union power_supply_propval *val);
+int smblib_force_dr_mode(struct smb_charger *chg, int mode);
 int smblib_get_prop_from_bms(struct smb_charger *chg,
 				enum power_supply_property psp,
 				union power_supply_propval *val);
@@ -741,8 +852,6 @@ void smblib_hvdcp_detect_enable(struct smb_charger *chg, bool enable);
 void smblib_hvdcp_exit_config(struct smb_charger *chg);
 void smblib_apsd_enable(struct smb_charger *chg, bool enable);
 int smblib_force_vbus_voltage(struct smb_charger *chg, u8 val);
-int smblib_get_irq_status(struct smb_charger *chg,
-				union power_supply_propval *val);
 
 int smblib_init(struct smb_charger *chg);
 int smblib_deinit(struct smb_charger *chg);

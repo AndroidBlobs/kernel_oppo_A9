@@ -14,6 +14,10 @@
 #define __SCHGM_FLASH_H__
 
 #include <linux/bitops.h>
+#ifdef VENDOR_EDIT
+/* LiYue@BSP.CHG.Basic, 2019/07/01, Add for charging */
+#include "../../../../../vendor/oppo_charger/oppo/charger_ic/oppo_battery_sm6125P.h"
+#endif
 
 #define SCHGM_FLASH_BASE			0xA600
 
