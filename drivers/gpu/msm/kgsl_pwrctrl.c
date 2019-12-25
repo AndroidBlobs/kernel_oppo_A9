@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -61,7 +61,8 @@ static const char * const clocks[] = {
 	"rbcpr_clk",
 	"iref_clk",
 	"gmu_clk",
-	"ahb_clk"
+	"ahb_clk",
+	"smmu_vote",
 };
 
 static unsigned int ib_votes[KGSL_MAX_BUSLEVELS];
@@ -176,6 +177,12 @@ static unsigned int _adjust_pwrlevel(struct kgsl_pwrctrl *pwr, int level,
 	unsigned int min_pwrlevel = min_t(unsigned int,
 					pwr->thermal_pwrlevel_floor,
 					pwr->min_pwrlevel);
+
+	/* Ensure that max/min pwrlevels are within thermal max/min limits */
+	max_pwrlevel = min_t(unsigned int, max_pwrlevel,
+					pwr->thermal_pwrlevel_floor);
+	min_pwrlevel = max_t(unsigned int, min_pwrlevel,
+					pwr->thermal_pwrlevel);
 
 	switch (pwrc->type) {
 	case KGSL_CONSTRAINT_PWRLEVEL: {
@@ -2552,8 +2559,9 @@ void kgsl_idle_check(struct work_struct *work)
 
 	requested_state = device->requested_state;
 
-	if (device->state == KGSL_STATE_ACTIVE
-		   || device->state ==  KGSL_STATE_NAP) {
+	if ((requested_state != KGSL_STATE_NONE) &&
+		(device->state == KGSL_STATE_ACTIVE
+			|| device->state ==  KGSL_STATE_NAP)) {
 
 		if (!atomic_read(&device->active_cnt)) {
 			spin_lock(&device->submit_lock);

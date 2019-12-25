@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -3596,6 +3596,8 @@ static struct adreno_coresight a5xx_coresight = {
 	.registers = a5xx_coresight_registers,
 	.count = ARRAY_SIZE(a5xx_coresight_registers),
 	.groups = a5xx_coresight_groups,
+	.read = kgsl_regread,
+	.write = kgsl_regwrite,
 };
 
 struct adreno_gpudev adreno_a5xx_gpudev = {
@@ -3633,5 +3635,4 @@ struct adreno_gpudev adreno_a5xx_gpudev = {
 	.preemption_schedule = a5xx_preemption_schedule,
 	.enable_64bit = a5xx_enable_64bit,
 	.clk_set_options = a5xx_clk_set_options,
-	.snapshot_preemption = a5xx_snapshot_preemption,
 };

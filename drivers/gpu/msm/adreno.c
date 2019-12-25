@@ -1245,6 +1245,26 @@ static void adreno_cx_misc_probe(struct kgsl_device *device)
 					res->start, adreno_dev->cx_misc_len);
 }
 
+static void adreno_qdss_dbg_probe(struct kgsl_device *device)
+{
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
+	struct resource *res;
+
+	res = platform_get_resource_byname(device->pdev, IORESOURCE_MEM,
+					   "qdss_gfx");
+
+	if (res == NULL)
+		return;
+
+	adreno_dev->qdss_gfx_base = res->start - device->reg_phys;
+	adreno_dev->qdss_gfx_len = resource_size(res);
+	adreno_dev->qdss_gfx_virt = devm_ioremap(device->dev, res->start,
+						resource_size(res));
+
+	if (adreno_dev->qdss_gfx_virt == NULL)
+		KGSL_DRV_WARN(device, "qdss_gfx ioremap failed\n");
+}
+
 static void adreno_efuse_read_soc_hw_rev(struct adreno_device *adreno_dev)
 {
 	unsigned int val;
@@ -1379,6 +1399,9 @@ static int adreno_probe(struct platform_device *pdev)
 
 	/* Probe for the optional CX_MISC block */
 	adreno_cx_misc_probe(device);
+
+	/*Probe for the optional QDSS_GFX_DBG block*/
+	adreno_qdss_dbg_probe(device);
 
 	/*
 	 * qcom,iommu-secure-id is used to identify MMUs that can handle secure
@@ -1586,6 +1609,28 @@ int adreno_clear_pending_transactions(struct kgsl_device *device)
 	int ret = 0;
 
 	if (adreno_has_gbif(adreno_dev)) {
+
+		/* This is taken care by GMU firmware if GMU is enabled */
+		if (!gmu_core_gpmu_isenabled(device)) {
+			/* Halt GBIF GX traffic and poll for halt ack */
+			if (adreno_is_a615_family(adreno_dev)) {
+				adreno_writereg(adreno_dev,
+					ADRENO_REG_RBBM_GPR0_CNTL,
+					GBIF_HALT_REQUEST);
+				ret = adreno_wait_for_halt_ack(device,
+					A6XX_RBBM_VBIF_GX_RESET_STATUS,
+					VBIF_RESET_ACK_MASK);
+			} else {
+				adreno_writereg(adreno_dev,
+					ADRENO_REG_RBBM_GBIF_HALT,
+					gpudev->gbif_gx_halt_mask);
+				ret = adreno_wait_for_halt_ack(device,
+					ADRENO_REG_RBBM_GBIF_HALT_ACK,
+					gpudev->gbif_gx_halt_mask);
+			}
+			if (ret)
+				return ret;
+		}
 
 		/* Halt new client requests */
 		adreno_writereg(adreno_dev, ADRENO_REG_GBIF_HALT,
@@ -1879,7 +1924,20 @@ static int _adreno_start(struct adreno_device *adreno_dev)
 	if (regulator_left_on)
 		_soft_reset(adreno_dev);
 
-
+#ifdef VENDOR_EDIT
+	// Muchun.Song@PSW.kernel.drv 20190722 modify for fix gpu reset fail
+	/*
+	 * During adreno_stop, GBIF halt is asserted to ensure
+	 * no further transaction can go through GPU before GPU
+	 * headswitch is turned off.
+	 *
+	 * This halt is deasserted once headswitch goes off but
+	 * incase headswitch doesn't goes off clear GBIF halt
+	 * here to ensure GPU wake-up doesn't fail because of
+	 * halted GPU transactions.
+	 */
+	adreno_deassert_gbif_halt(adreno_dev);
+#endif
 	if (adreno_is_a640v1(adreno_dev)) {
 		unsigned long start = jiffies;
 
@@ -2239,9 +2297,6 @@ static int adreno_stop(struct kgsl_device *device)
 
 	adreno_clear_pending_transactions(device);
 
-	/* The halt is not cleared in the above function if we have GBIF */
-	adreno_deassert_gbif_halt(adreno_dev);
-
 	kgsl_mmu_stop(&device->mmu);
 
 	/*
@@ -2261,11 +2316,16 @@ static inline bool adreno_try_soft_reset(struct kgsl_device *device, int fault)
 
 	/*
 	 * Do not do soft reset for a IOMMU fault (because the IOMMU hardware
-	 * needs a reset too) or for the A304 because it can't do SMMU
-	 * programming of any kind after a soft reset
+	 * needs a reset too) and also for below gpu
+	 * A304: It can't do SMMU programming of any kind after a soft reset
+	 * A612: IPC protocol between RGMU and CP will not restart after reset
+	 * A610: An across chip issue with reset line in all 11nm chips,
+	 * resulting in recommendation to not use soft reset.
 	 */
 
-	if ((fault & ADRENO_IOMMU_PAGE_FAULT) || adreno_is_a304(adreno_dev))
+	if ((fault & ADRENO_IOMMU_PAGE_FAULT) || adreno_is_a304(adreno_dev) ||
+			adreno_is_a612(adreno_dev) ||
+			adreno_is_a610(adreno_dev))
 		return false;
 
 	return true;
@@ -2294,8 +2354,9 @@ int adreno_reset(struct kgsl_device *device, int fault)
 		if (ret == 0) {
 			ret = adreno_soft_reset(device);
 			if (ret)
-				KGSL_DEV_ERR_ONCE(device,
-					"Device soft reset failed\n");
+				KGSL_DRV_ERR(device,
+					"Device soft reset failed: ret=%d\n",
+					ret);
 		}
 	}
 	if (ret) {
@@ -2674,6 +2735,27 @@ static int adreno_getproperty(struct kgsl_device *device,
 			status = 0;
 		}
 		break;
+
+	case KGSL_PROP_GAMING_BIN:
+	{
+		unsigned int gaming_bin;
+
+		if (sizebytes != sizeof(unsigned int)) {
+			status = -EINVAL;
+			break;
+		}
+
+		gaming_bin = adreno_dev->gaming_bin ? 1 : 0;
+
+		if (copy_to_user(value, &gaming_bin,
+					sizeof(unsigned int))) {
+			status = -EFAULT;
+			break;
+		}
+		status = 0;
+	}
+	break;
+
 	default:
 		status = -EINVAL;
 	}
@@ -3698,7 +3780,7 @@ static void adreno_power_stats(struct kgsl_device *device,
 		if (gpudev->read_throttling_counters) {
 			adj = gpudev->read_throttling_counters(adreno_dev);
 			if (adj < 0 && -adj > gpu_busy)
-				adj = 0;
+				adj = -gpu_busy;
 
 			gpu_busy += adj;
 		}
@@ -3881,25 +3963,36 @@ static void adreno_iommu_sync(struct kgsl_device *device, bool sync)
 	}
 }
 
-static void _regulator_disable(struct kgsl_regulator *regulator, bool poll)
+// Muchun.Song@PSW.kernel.drv 20190722 modify for fix gpu reset fail
+static void _regulator_disable(struct kgsl_regulator *regulator)
 {
-	unsigned long wait_time = jiffies + msecs_to_jiffies(200);
+	unsigned long wait_time;
 
 	if (IS_ERR_OR_NULL(regulator->reg))
 		return;
 
 	regulator_disable(regulator->reg);
 
-	if (poll == false)
-		return;
+	wait_time = jiffies + msecs_to_jiffies(5000);
 
+	/*
+	 * Poll for 5secs to ensure that regulator
+	 * is actually OFF. This is needed to make
+	 * sure that next wake-up is indeed a fresh
+	 * start and doesn't fail (especially during
+	 * recovery from fault) because of stale state.
+	 */
 	while (!time_after(jiffies, wait_time)) {
 		if (!regulator_is_enabled(regulator->reg))
 			return;
-		cpu_relax();
+		usleep_range(10, 100);
 	}
 
-	KGSL_CORE_ERR("regulator '%s' still on after 200ms\n", regulator->name);
+	if (!regulator_is_enabled(regulator->reg))
+		return;
+
+	KGSL_CORE_ERR("regulator '%s' still on after 5000ms\n",
+		regulator->name);
 }
 
 static void adreno_regulator_disable_poll(struct kgsl_device *device)
@@ -3909,16 +4002,18 @@ static void adreno_regulator_disable_poll(struct kgsl_device *device)
 	int i;
 
 	/* Fast path - hopefully we don't need this quirk */
+	// Muchun.Song@PSW.kernel.drv 20190624 modify for fix gpu reset fail
 	if (!ADRENO_QUIRK(adreno_dev, ADRENO_QUIRK_IOMMU_SYNC)) {
 		for (i = KGSL_MAX_REGULATORS - 1; i >= 0; i--)
-			_regulator_disable(&pwr->regulators[i], false);
+			_regulator_disable(&pwr->regulators[i]);
 		return;
 	}
 
 	adreno_iommu_sync(device, true);
 
+	// Muchun.Song@PSW.kernel.drv 20190624 modify for fix gpu reset fail
 	for (i = 0; i < KGSL_MAX_REGULATORS; i++)
-		_regulator_disable(&pwr->regulators[i], true);
+		_regulator_disable(&pwr->regulators[i]);
 
 	adreno_iommu_sync(device, false);
 }
