@@ -23,13 +23,50 @@
 #include <linux/pm_wakeup.h>
 
 #include <net/sock.h>
-#include <uapi/linux/sched/types.h>
 
 #include "qrtr.h"
 
 #define QRTR_LOG_PAGE_CNT 4
+#ifndef VENDOR_EDIT
+//Asiga@PSW.NW.DATA.2120730, 2019/06/26.
+//Modify for: print qrtr debug msg and fix QMI wakeup statistics for QCOM platforms using glink.
 #define QRTR_INFO(ctx, x, ...)				\
 	ipc_log_string(ctx, x, ##__VA_ARGS__)
+#else
+#define QRTR_INFO(ctx, x, ...)				\
+	do { \
+		ipc_log_string(ctx, x, ##__VA_ARGS__); \
+		if (qrtr_first_msg) \
+		{ \
+			memset(qrtr_first_msg_details, 0, sizeof(qrtr_first_msg_details)); \
+			strlcpy(qrtr_first_msg_details, QRTR_FIRST_HEAD, sizeof(qrtr_first_msg_details)); \
+			snprintf(qrtr_first_msg_details + QRTR_FIRST_HEAD_COUNT, sizeof(qrtr_first_msg_details) - QRTR_FIRST_HEAD_COUNT, x, ##__VA_ARGS__); \
+			if (strstr(qrtr_first_msg_details, "RX DATA")) \
+			{ \
+				qrtr_first_msg = 0; \
+				sub_qrtr_first_msg_details = strstr(qrtr_first_msg_details, "src"); \
+				if(sub_qrtr_first_msg_details && strlen(sub_qrtr_first_msg_details) > 6) \
+				{ \
+					if (sub_qrtr_first_msg_details[6] == '0') \
+					{  \
+						wakeup_source_count_modem++; \
+						modem_wakeup_src_count[MODEM_QMI_WS_INDEX]++; \
+						glink_wakeup_count_modem++; \
+					} else if (sub_qrtr_first_msg_details[6] == '5') \
+					{ \
+						glink_wakeup_count_adsp++; \
+						wakeup_source_count_adsp++;\
+					} else if (sub_qrtr_first_msg_details[6] == 'a') \
+					{ \
+						glink_wakeup_count_cdsp++; \
+						wakeup_source_count_cdsp++;\
+					} \
+				} \
+				pr_info("%s", qrtr_first_msg_details); \
+			} \
+		} \
+	} while(0)
+#endif /* VENDOR_EDIT */
 
 #define QRTR_PROTO_VER_1 1
 #define QRTR_PROTO_VER_2 3
@@ -535,14 +572,12 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
 	hdr->type = cpu_to_le32(type);
 	hdr->src_node_id = cpu_to_le32(from->sq_node);
 	hdr->src_port_id = cpu_to_le32(from->sq_port);
-	if (to->sq_port == QRTR_PORT_CTRL) {
+	if (to->sq_node == QRTR_NODE_BCAST)
 		hdr->dst_node_id = cpu_to_le32(node->nid);
-		hdr->dst_port_id = cpu_to_le32(QRTR_NODE_BCAST);
-	} else {
+	else
 		hdr->dst_node_id = cpu_to_le32(to->sq_node);
-		hdr->dst_port_id = cpu_to_le32(to->sq_port);
-	}
 
+	hdr->dst_port_id = cpu_to_le32(to->sq_port);
 	hdr->size = cpu_to_le32(len);
 	hdr->confirm_rx = !!confirm_rx;
 
@@ -687,6 +722,8 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 	struct sk_buff *skb;
 	struct qrtr_cb *cb;
 	unsigned int size;
+	int err = -ENOMEM;
+	int frag = false;
 	unsigned int ver;
 	size_t hdrlen;
 
@@ -694,8 +731,14 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 		return -EINVAL;
 
 	skb = netdev_alloc_skb(NULL, len);
-	if (!skb)
-		return -ENOMEM;
+	if (!skb) {
+		skb = alloc_skb_with_frags(0, len, 0, &err, GFP_ATOMIC);
+		if (!skb) {
+			pr_err("%s memory allocation failed\n", __func__);
+			return -ENOMEM;
+		}
+		frag = true;
+	}
 
 	cb = (struct qrtr_cb *)skb->cb;
 
@@ -751,7 +794,13 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 
 	__pm_wakeup_event(node->ws, 0);
 
-	skb_put_data(skb, data + hdrlen, size);
+	if (frag) {
+		skb->data_len = size;
+		skb->len = size;
+		skb_store_bits(skb, 0, data + hdrlen, size);
+	} else {
+		skb_put_data(skb, data + hdrlen, size);
+	}
 	qrtr_log_rx_msg(node, skb);
 
 	skb_queue_tail(&node->rx_queue, skb);
@@ -906,8 +955,11 @@ static void qrtr_node_rx_work(struct kthread_work *work)
 			if (!ipc) {
 				kfree_skb(skb);
 			} else {
-				if (sock_queue_rcv_skb(&ipc->sk, skb))
+				if (sock_queue_rcv_skb(&ipc->sk, skb)) {
+					pr_err("%s qrtr pkt dropped flow[%d]\n",
+					       __func__, cb->confirm_rx);
 					kfree_skb(skb);
+				}
 
 				qrtr_port_put(ipc);
 			}
@@ -919,16 +971,13 @@ static void qrtr_node_rx_work(struct kthread_work *work)
  * qrtr_endpoint_register() - register a new endpoint
  * @ep: endpoint to register
  * @nid: desired node id; may be QRTR_EP_NID_AUTO for auto-assignment
- * @rt: flag to notify real time low latency endpoint
  * Return: 0 on success; negative error code on failure
  *
  * The specified endpoint must have the xmit function pointer set on call.
  */
-int qrtr_endpoint_register(struct qrtr_endpoint *ep, unsigned int net_id,
-			   bool rt)
+int qrtr_endpoint_register(struct qrtr_endpoint *ep, unsigned int net_id)
 {
 	struct qrtr_node *node;
-	struct sched_param param = {.sched_priority = 1};
 
 	if (!ep || !ep->xmit)
 		return -EINVAL;
@@ -951,8 +1000,6 @@ int qrtr_endpoint_register(struct qrtr_endpoint *ep, unsigned int net_id,
 		kfree(node);
 		return -ENOMEM;
 	}
-	if (rt)
-		sched_setscheduler(node->task, SCHED_FIFO, &param);
 
 	mutex_init(&node->qrtr_tx_lock);
 	INIT_RADIX_TREE(&node->qrtr_tx_flow, GFP_KERNEL);

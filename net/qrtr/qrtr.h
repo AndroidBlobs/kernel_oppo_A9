@@ -4,6 +4,32 @@
 
 #include <linux/types.h>
 
+#ifdef VENDOR_EDIT
+//Asiga@PSW.NW.DATA.2120730, 2019/06/26.
+//Add for: print qrtr debug msg and fix QMI wakeup statistics for QCOM platforms using glink.
+#define MODEM_WAKEUP_SRC_NUM 3
+#define MODEM_QMI_WS_INDEX 2
+#define QRTR_FIRST_HEAD "QrtrFirst "
+#define QRTR_FIRST_HEAD_COUNT 10
+extern u64 wakeup_source_count_modem;
+extern int modem_wakeup_src_count[MODEM_WAKEUP_SRC_NUM];
+extern int qrtr_first_msg;
+extern char qrtr_first_msg_details[256];
+extern char *sub_qrtr_first_msg_details;
+#endif /* VENDOR_EDIT */
+
+#ifdef VENDOR_EDIT
+//yunqing.zeng@bsp.power.basic 20190709 add for glink count cal
+extern u64 glink_wakeup_count;
+extern u64 glink_wakeup_count_modem;
+extern u64 glink_wakeup_count_adsp;
+extern u64 glink_wakeup_count_cdsp;
+
+//yunqing.zeng@bsp.power.basic 20190709 add for adsp count cal
+extern u64 wakeup_source_count_cdsp;
+extern u64 wakeup_source_count_adsp;
+#endif
+
 struct sk_buff;
 
 /* endpoint node id auto assignment */
@@ -26,8 +52,7 @@ struct qrtr_endpoint {
 	struct qrtr_node *node;
 };
 
-int qrtr_endpoint_register(struct qrtr_endpoint *ep, unsigned int net_id,
-			   bool rt);
+int qrtr_endpoint_register(struct qrtr_endpoint *ep, unsigned int net_id);
 
 void qrtr_endpoint_unregister(struct qrtr_endpoint *ep);
 

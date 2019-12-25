@@ -27,6 +27,7 @@
  * receives, no matter what.
  */
 
+
 /* return EBUSY when somebody else is registered, return EEXIST if the
  * same handler is registered, return 0 in case of success. */
 void nf_register_queue_handler(struct net *net, const struct nf_queue_handler *qh)
@@ -112,8 +113,10 @@ unsigned int nf_queue_nf_hook_drop(struct net *net)
 EXPORT_SYMBOL_GPL(nf_queue_nf_hook_drop);
 
 static int __nf_queue(struct sk_buff *skb, const struct nf_hook_state *state,
-		      const struct nf_hook_entries *entries,
-		      unsigned int index, unsigned int queuenum)
+                      const struct nf_hook_entries *entries,
+                      unsigned int index, unsigned int queuenum)
+
+
 {
 	int status = -ENOENT;
 	struct nf_queue_entry *entry = NULL;
@@ -121,8 +124,11 @@ static int __nf_queue(struct sk_buff *skb, const struct nf_hook_state *state,
 	const struct nf_queue_handler *qh;
 	struct net *net = state->net;
 
+
+
 	/* QUEUE == DROP if no one is waiting, to be safe. */
 	qh = rcu_dereference(net->nf.queue_handler);
+
 	if (!qh) {
 		status = -ESRCH;
 		goto err;
@@ -169,8 +175,12 @@ int nf_queue(struct sk_buff *skb, struct nf_hook_state *state,
 {
 	int ret;
 
+
 	ret = __nf_queue(skb, state, entries, index, verdict >> NF_VERDICT_QBITS);
+
+
 	if (ret < 0) {
+
 		if (ret == -ESRCH &&
 		    (verdict & NF_VERDICT_FLAG_QUEUE_BYPASS))
 			return 1;
