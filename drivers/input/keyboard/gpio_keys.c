@@ -30,6 +30,10 @@
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/spinlock.h>
+#ifdef VENDOR_EDIT
+//Fanhong.Kong@ProDrv.CHG,add 2016/7/26 for vol event
+#include <soc/oppo/oppo_project.h>
+#endif /*VENDOR_EDIT*/
 
 struct gpio_button_data {
 	const struct gpio_keys_button *button;
@@ -357,11 +361,21 @@ static const struct attribute_group gpio_keys_attr_group = {
 	.attrs = gpio_keys_attrs,
 };
 
+#ifdef VENDOR_EDIT //yixue.ge@bsp.drv add for enable dload
+static unsigned int vol_Key_password = 0;
+bool door_open = false;
+extern void oppo_switch_fulldump(int on);
+#endif
+
 static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 {
 	const struct gpio_keys_button *button = bdata->button;
 	struct input_dev *input = bdata->input;
 	unsigned int type = button->type ?: EV_KEY;
+#ifdef VENDOR_EDIT //yixue.ge@bsp.drv add for enable dload
+	unsigned long start_timer_current = jiffies;
+	static unsigned long start_timer_last = 0;
+#endif
 	int state;
 
 	state = gpiod_get_value_cansleep(bdata->gpiod);
@@ -378,6 +392,48 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 		input_event(input, type, *bdata->code, state);
 	}
 	input_sync(input);
+
+#ifdef VENDOR_EDIT
+/*wanghao@BSP.Kernel.Debug, 2018/05/09, Add for triggering dump*/
+	if (button->code == KEY_VOLUMEUP) {
+		if (state) {
+			vol_Key_password = (vol_Key_password << 1) | 0x01;
+		}
+		dev_info(input->dev.parent, "vol up state: %d\n", !!state);
+	}
+
+	if (button->code == KEY_VOLUMEDOWN) {
+		if (state) {
+			vol_Key_password = (vol_Key_password << 1)&~0x01;
+		}
+		dev_info(input->dev.parent, "vol down state: %d\n", !!state);
+	}
+
+	if (state) {
+		if (door_open) {
+			oppo_switch_fulldump(0);
+			door_open = false;
+			vol_Key_password = 0;
+			dev_info(input->dev.parent, "door closed\n");
+		}
+
+		start_timer_current = jiffies;
+
+		if (start_timer_last != 0) {
+			if (time_after(start_timer_current,start_timer_last + msecs_to_jiffies(1000))){
+				vol_Key_password = 0;
+			}
+
+			if (get_project() != OPPO_UNKOWN && (get_project() == vol_Key_password) && (door_open == false)) {
+				pr_err("vol Key password matched %d, door_open \n", get_project());
+				oppo_switch_fulldump(1);
+				door_open = true;
+			}
+		}
+
+		start_timer_last = start_timer_current;
+	}
+#endif
 }
 
 static void gpio_keys_gpio_work_func(struct work_struct *work)
