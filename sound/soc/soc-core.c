@@ -1579,10 +1579,15 @@ static int soc_probe_component(struct snd_soc_card *card,
 			goto err_probe;
 		}
 
+		#ifndef VENDOR_EDIT
+		/*Jianfeng.Qiu@PSW.MM.AudioDriver.Platform.1234162, 2018/03/30,
+		 *Delete for uart issue duo to warning log.
+		 */
 		WARN(dapm->idle_bias_off &&
 			dapm->bias_level != SND_SOC_BIAS_OFF,
 			"codec %s can not start from non-off bias with idle_bias_off==1\n",
 			component->name);
+		#endif /* VENDOR_EDIT */
 	}
 
 	/* machine specific init */
@@ -2347,6 +2352,7 @@ static int snd_soc_instantiate_card(struct snd_soc_card *card)
 	}
 
 	card->instantiated = 1;
+	dapm_mark_endpoints_dirty(card);
 	snd_soc_dapm_sync(&card->dapm);
 	mutex_unlock(&card->mutex);
 	mutex_unlock(&client_mutex);
