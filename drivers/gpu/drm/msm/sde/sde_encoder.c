@@ -168,6 +168,7 @@ enum sde_enc_rc_states {
  * @enc_spin_lock:	Virtual-Encoder-Wide Spin Lock for IRQ purposes
  * @bus_scaling_client:	Client handle to the bus scaling interface
  * @te_source:		vsync source pin information
+ * @ops:		Encoder ops from init function
  * @num_phys_encs:	Actual number of physical encoders contained.
  * @phys_encs:		Container of physical encoders managed.
  * @cur_master:		Pointer to the current master in this mode. Optimization
@@ -230,6 +231,8 @@ struct sde_encoder_virt {
 
 	uint32_t display_num_of_h_tiles;
 	uint32_t te_source;
+
+	struct sde_encoder_ops ops;
 
 	unsigned int num_phys_encs;
 	struct sde_encoder_phys *phys_encs[MAX_PHYS_ENCODERS_PER_VIRTUAL];
@@ -841,16 +844,12 @@ void sde_encoder_helper_split_config(
 	struct sde_hw_mdp *hw_mdptop;
 	enum sde_rm_topology_name topology;
 	struct msm_display_info *disp_info;
-	struct msm_mode_info mode_info;
-	struct drm_encoder *drm_enc;
-	int ret;
 
 	if (!phys_enc || !phys_enc->hw_mdptop || !phys_enc->parent) {
 		SDE_ERROR("invalid arg(s), encoder %d\n", phys_enc != 0);
 		return;
 	}
 
-	drm_enc = phys_enc->parent;
 	sde_enc = to_sde_encoder_virt(phys_enc->parent);
 	hw_mdptop = phys_enc->hw_mdptop;
 	disp_info = &sde_enc->disp_info;
@@ -885,21 +884,11 @@ void sde_encoder_helper_split_config(
 			phys_enc->ops.needs_single_flush(phys_enc))
 		cfg->split_flush_en = true;
 
-	cfg->pp_split_slave = INTF_MAX;
 	topology = sde_connector_get_topology_name(phys_enc->connector);
-	if (topology == SDE_RM_TOPOLOGY_PPSPLIT) {
+	if (topology == SDE_RM_TOPOLOGY_PPSPLIT)
 		cfg->pp_split_slave = cfg->intf;
-		ret = _sde_encoder_get_mode_info(drm_enc, &mode_info);
-		if (ret) {
-			SDE_ERROR_ENC(sde_enc, "failed to get mode info\n");
-			return;
-		}
-		cfg->overlap_pixel_width = mode_info.overlap_pixels;
-	}
-
-	if (topology == SDE_RM_TOPOLOGY_PPSPLIT
-			&& phys_enc->split_role == ENC_ROLE_SLAVE)
-		cfg->pp_slave_intf = true;
+	else
+		cfg->pp_split_slave = INTF_MAX;
 
 	if (phys_enc->split_role == ENC_ROLE_MASTER) {
 		SDE_DEBUG_ENC(sde_enc, "enable %d\n", cfg->en);
@@ -2195,6 +2184,7 @@ static void sde_encoder_input_event_handler(struct input_handle *handle,
 
 	priv = drm_enc->dev->dev_private;
 	sde_enc = to_sde_encoder_virt(drm_enc);
+#ifndef VENDOR_EDIT
 	if (!sde_enc->crtc || (sde_enc->crtc->index
 			>= ARRAY_SIZE(priv->disp_thread))) {
 		SDE_DEBUG_ENC(sde_enc,
@@ -2207,6 +2197,27 @@ static void sde_encoder_input_event_handler(struct input_handle *handle,
 	SDE_EVT32_VERBOSE(DRMID(drm_enc));
 
 	disp_thread = &priv->disp_thread[sde_enc->crtc->index];
+#else /* VENDOR_EDIT */
+/* Gou shengjun@PSW.MM.Display.LCD.Stable,2018-11-21
+ * fix sde_enc->crtc race
+ */
+	/* sde_enc may released in somewhere */
+	{
+		struct drm_crtc *crtc = sde_enc->crtc;
+
+		if (!crtc || (crtc->index >= ARRAY_SIZE(priv->disp_thread))) {
+			SDE_DEBUG_ENC(sde_enc,
+					"invalid cached CRTC: %d or crtc index: %d\n",
+					crtc == NULL,
+					crtc ? crtc->index : -EINVAL);
+			return;
+		}
+
+		SDE_EVT32_VERBOSE(DRMID(drm_enc));
+
+		disp_thread = &priv->disp_thread[crtc->index];
+	}
+#endif /* VENDOR_EDIT */
 
 	kthread_queue_work(&disp_thread->worker,
 				&sde_enc->input_event_work);
@@ -2595,6 +2606,7 @@ static int sde_encoder_resource_control(struct drm_encoder *drm_enc,
 		mutex_unlock(&sde_enc->rc_lock);
 		break;
 	case SDE_ENC_RC_EVENT_EARLY_WAKEUP:
+#ifndef VENDOR_EDIT
 		if (!sde_enc->crtc ||
 			sde_enc->crtc->index >= ARRAY_SIZE(priv->disp_thread)) {
 			SDE_DEBUG_ENC(sde_enc,
@@ -2606,6 +2618,25 @@ static int sde_encoder_resource_control(struct drm_encoder *drm_enc,
 		}
 
 		disp_thread = &priv->disp_thread[sde_enc->crtc->index];
+#else
+/* Gou shengjun@PSW.MM.Display.LCD.Stable,2018-11-21
+ * fix sde_enc->crtc race
+*/
+		{
+			struct drm_crtc *crtc = sde_enc->crtc;
+
+			if (!crtc || crtc->index >= ARRAY_SIZE(priv->disp_thread)) {
+				SDE_DEBUG_ENC(sde_enc,
+						"invalid crtc:%d or crtc index:%d , sw_event:%u\n",
+						crtc == NULL,
+						crtc ? crtc->index : -EINVAL,
+						sw_event);
+				return -EINVAL;
+			}
+
+			disp_thread = &priv->disp_thread[crtc->index];
+		}
+#endif /* VENDOR_EDIT */
 
 		mutex_lock(&sde_enc->rc_lock);
 
@@ -2812,7 +2843,7 @@ static void sde_encoder_virt_mode_set(struct drm_encoder *drm_enc,
 		struct sde_encoder_phys *phys = sde_enc->phys_encs[i];
 
 		if (phys) {
-			if (!sde_enc->hw_pp[i]) {
+			if (!sde_enc->hw_pp[i] && sde_enc->topology.num_intf) {
 				SDE_ERROR_ENC(sde_enc,
 				    "invalid pingpong block for the encoder\n");
 				return;
@@ -3019,12 +3050,6 @@ void sde_encoder_virt_restore(struct drm_encoder *drm_enc)
 		return;
 	}
 	sde_enc = to_sde_encoder_virt(drm_enc);
-
-	if (!sde_enc->cur_master) {
-		SDE_ERROR("virt encoder has no master\n");
-		return;
-	}
-
 	memset(&sde_enc->cur_master->intf_cfg_v1, 0,
 			sizeof(sde_enc->cur_master->intf_cfg_v1));
 	sde_enc->idle_pc_restore = true;
@@ -3562,23 +3587,6 @@ int sde_encoder_idle_request(struct drm_encoder *drm_enc)
 	return 0;
 }
 
-int sde_encoder_get_ctlstart_timeout_state(struct drm_encoder *drm_enc)
-{
-	struct sde_encoder_virt *sde_enc = NULL;
-	int i, count = 0;
-
-	if (!drm_enc)
-		return 0;
-
-	sde_enc = to_sde_encoder_virt(drm_enc);
-
-	for (i = 0; i < sde_enc->num_phys_encs; i++) {
-		count += atomic_read(&sde_enc->phys_encs[i]->ctlstart_timeout);
-		atomic_set(&sde_enc->phys_encs[i]->ctlstart_timeout, 0);
-	}
-
-	return count;
-}
 /**
  * _sde_encoder_trigger_flush - trigger flush for a physical encoder
  * drm_enc: Pointer to drm encoder structure
@@ -5153,6 +5161,23 @@ static int sde_encoder_setup_display(struct sde_encoder_virt *sde_enc,
 		SDE_DEBUG("h_tile_instance %d = %d, split_role %d\n",
 				i, controller_id, phys_params.split_role);
 
+		if (sde_enc->ops.phys_init) {
+			struct sde_encoder_phys *enc;
+
+			enc = sde_enc->ops.phys_init(intf_type,
+					controller_id,
+					&phys_params);
+			if (enc) {
+				sde_enc->phys_encs[sde_enc->num_phys_encs] =
+					enc;
+				++sde_enc->num_phys_encs;
+			} else
+				SDE_ERROR_ENC(sde_enc,
+						"failed to add phys encs\n");
+
+			continue;
+		}
+
 		if (intf_type == INTF_WB) {
 			phys_params.intf_idx = INTF_MAX;
 			phys_params.wb_idx = sde_encoder_get_wb(
@@ -5218,9 +5243,10 @@ static const struct drm_encoder_funcs sde_encoder_funcs = {
 		.early_unregister = sde_encoder_early_unregister,
 };
 
-struct drm_encoder *sde_encoder_init(
+struct drm_encoder *sde_encoder_init_with_ops(
 		struct drm_device *dev,
-		struct msm_display_info *disp_info)
+		struct msm_display_info *disp_info,
+		const struct sde_encoder_ops *ops)
 {
 	struct msm_drm_private *priv = dev->dev_private;
 	struct sde_kms *sde_kms = to_sde_kms(priv->kms);
@@ -5235,6 +5261,9 @@ struct drm_encoder *sde_encoder_init(
 		ret = -ENOMEM;
 		goto fail;
 	}
+
+	if (ops)
+		sde_enc->ops = *ops;
 
 	mutex_init(&sde_enc->enc_lock);
 	ret = sde_encoder_setup_display(sde_enc, sde_kms, disp_info,
@@ -5296,6 +5325,13 @@ fail:
 		sde_encoder_destroy(drm_enc);
 
 	return ERR_PTR(ret);
+}
+
+struct drm_encoder *sde_encoder_init(
+		struct drm_device *dev,
+		struct msm_display_info *disp_info)
+{
+	return sde_encoder_init_with_ops(dev, disp_info, NULL);
 }
 
 int sde_encoder_wait_for_event(struct drm_encoder *drm_enc,

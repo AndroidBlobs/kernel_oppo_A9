@@ -17,11 +17,19 @@
 #include <linux/slab.h>
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
+#include <linux/pwm.h>
 #include <video/mipi_display.h>
 
 #include "dsi_panel.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_parser.h"
+#include "../lm3697_bl.h"
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/12/13
+ * Add for get boot mode.
+*/
+#include <soc/oppo/boot_mode.h>
+#endif /*VENDOR_EDIT*/
 
 /**
  * topology is currently defined by a set of following 3 values:
@@ -41,6 +49,7 @@
 #define DEFAULT_PANEL_JITTER_ARRAY_SIZE		2
 #define MAX_PANEL_JITTER		10
 #define DEFAULT_PANEL_PREFILL_LINES	25
+#define TICKS_IN_MICRO_SECOND		1000000
 
 enum dsi_dsc_ratio_type {
 	DSC_8BPC_8BPP,
@@ -48,6 +57,35 @@ enum dsi_dsc_ratio_type {
 	DSC_12BPC_8BPP,
 	DSC_RATIO_TYPE_MAX
 };
+
+#if 0
+//guoqiang.jiang@oppo.com,2019.03.27,add himax 18112a panel
+extern int lm3697_reg_init(void);
+extern void lm3697_bl_enable(int enable);
+extern int lm3697_lcd_backlight_set_level(unsigned int bl_level);
+#endif /* VENDOR_EDIT */
+
+extern int dim_enable_tag;
+extern int test_dimming;
+extern int close_tag;
+extern int is_ktd3136;
+extern int shutdown_flag;
+/* liwei.a@PSW.MM.Display.LCD.Stability, 2019/05/06
+ * add for judging ilitek IC panel
+*/
+int is_ilitek_panel = 0;
+int panel_which = -1;
+
+#ifdef VENDOR_EDIT
+/*MingQiang.Guo@BSP.TP.Function, 2018/06/14, add for trigger load tp fw by lcd driver after lcd reset*/
+extern void lcd_queue_load_tp_fw(void);
+#endif/*VENDOR_EDIT*/
+
+#ifdef VENDOR_EDIT
+/* Ping.Zhang@PSW.BSP.TP.Function, 2019/04/26, Add for TP common code */
+extern int tp_gesture_enable_flag(void);
+void __attribute__((weak)) tp_ftm_extra(void) {return;}
+#endif /* VENDOR_EDIT */
 
 static u32 dsi_dsc_rc_buf_thresh[] = {0x0e, 0x1c, 0x2a, 0x38, 0x46, 0x54,
 		0x62, 0x69, 0x70, 0x77, 0x79, 0x7b, 0x7d, 0x7e};
@@ -91,6 +129,11 @@ static char dsi_dsc_rc_range_max_qp_1_1_scr1[][15] = {
 	{8, 8, 9, 10, 11, 11, 11, 12, 13, 14, 14, 15, 15, 16, 17},
 	{12, 12, 13, 14, 15, 15, 15, 16, 17, 18, 18, 19, 19, 20, 23},
 	};
+
+#ifdef VENDOR_EDIT
+//liwei.a@PSW.MM.Display.LCD.Stability, 2019/05/21, add for vsn/vsp not dropped when guesture open
+static bool is_pd_with_guesture = false;
+#endif
 
 /*
  * DSC 1.1 and DSC 1.1 SCR
@@ -403,6 +446,12 @@ static int dsi_panel_reset(struct dsi_panel *panel)
 		if (rc)
 			pr_err("unable to set dir for mode gpio rc=%d\n", rc);
 	}
+
+	#ifdef VENDOR_EDIT
+	//guoqiang.jiang@oppo.com,2019.03.27,add himax 18112a panel
+	if(is_ktd3136 > 0)
+		lm3697_bl_enable(1);
+	#endif /* VENDOR_EDIT */
 exit:
 	return rc;
 }
@@ -432,8 +481,17 @@ static int dsi_panel_set_pinctrl_state(struct dsi_panel *panel, bool enable)
 static int dsi_panel_power_on(struct dsi_panel *panel)
 {
 	int rc = 0;
+	#ifdef VENDOR_EDIT
+	//liwei.a@PSW.MM.Display.LCD.Stability, 2019/05/20, add for not loading tp fw in ftm mode.
+	int mode = 0;
+	#endif
 
-	rc = dsi_pwr_enable_regulator(&panel->power_info, true);
+	#ifdef VENDOR_EDIT
+	//liwei.a@PSW.MM.Display.LCD.Stability, 2019/05/21, add for not power vsp/vsn again when guesture open
+	if(true != is_pd_with_guesture)
+		rc = dsi_pwr_enable_regulator(&panel->power_info, true);
+	#endif
+
 	if (rc) {
 		pr_err("[%s] failed to enable vregs, rc=%d\n", panel->name, rc);
 		goto exit;
@@ -450,6 +508,21 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 		pr_err("[%s] failed to reset panel, rc=%d\n", panel->name, rc);
 		goto error_disable_gpio;
 	}
+#ifdef VENDOR_EDIT
+/*MingQiang.Guo@BSP.TP.Function, 2018/06/14, add for trigger load tp fw by lcd driver after lcd reset*/
+	mode = get_boot_mode();
+	pr_err("[oppo_test] in dsi_panel_power_on, mode=%d\n",mode);
+
+	if((mode != MSM_BOOT_MODE__FACTORY) && (mode != MSM_BOOT_MODE__RF) && (mode != MSM_BOOT_MODE__WLAN))
+	{
+		lcd_queue_load_tp_fw();
+	}
+#endif/*VENDOR_EDIT*/
+	#ifdef VENDOR_EDIT
+	//guoqiang.jiang@oppo.com,2019.03.27,add himax 18112a panel
+	if (is_ktd3136 > 0)
+		lm3697_reg_init();
+	#endif /* VENDOR_EDIT */
 
 	goto exit;
 
@@ -476,8 +549,13 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 	if (gpio_is_valid(panel->reset_config.disp_en_gpio))
 		gpio_set_value(panel->reset_config.disp_en_gpio, 0);
 
-	if (gpio_is_valid(panel->reset_config.reset_gpio))
-		gpio_set_value(panel->reset_config.reset_gpio, 0);
+	#ifdef VENDOR_EDIT
+	//liwei.a@PSW.MM.Display.LCD.Stability, 2019/06/20, lcd reset pull low only when shutdown
+	if (shutdown_flag == 1) {
+		if (gpio_is_valid(panel->reset_config.reset_gpio))
+			gpio_set_value(panel->reset_config.reset_gpio, 0);
+	}
+	#endif
 
 	if (gpio_is_valid(panel->reset_config.lcd_mode_sel_gpio))
 		gpio_set_value(panel->reset_config.lcd_mode_sel_gpio, 0);
@@ -488,14 +566,50 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 		       rc);
 	}
 
-	rc = dsi_pwr_enable_regulator(&panel->power_info, false);
+    #ifdef VENDOR_EDIT
+    //liwei.a@PSW.MM.Display.LCD.Stability, 2019/05/09, add for lcd power off sequence
+    usleep_range(1000, 1100);
+    #endif
+
+	#ifdef VENDOR_EDIT
+	/* Ping.Zhang@PSW.BSP.TP.Function, 2019/04/26, Add for TP common code */
+	//liwei.a@PSW.MM.Display.LCD.Stability, 2019/06/04, modify for shutting down vsp/vsn when esd recovery
+	if(1 == tp_gesture_enable_flag() && !atomic_read(&panel->esd_recovery_pending)) {
+		is_pd_with_guesture = true;
+		//close lcd power initiative when shutdown the devices
+		if (shutdown_flag == 1) {
+			rc = dsi_pwr_enable_regulator(&panel->power_info, false);
+		}
+	}
+	else
+	{
+		is_pd_with_guesture = false;
+		rc = dsi_pwr_enable_regulator(&panel->power_info, false);
+	}
+	#endif
+
 	if (rc)
 		pr_err("[%s] failed to enable vregs, rc=%d\n", panel->name, rc);
 
+	#ifdef VENDOR_EDIT
+	//guoqiang.jiang@oppo.com,2019.03.27,add himax 18112a panel
+	if (is_ktd3136 > 0)
+		lm3697_bl_enable(0);
+	#endif /* VENDOR_EDIT */
+
 	return rc;
 }
+#ifndef VENDOR_EDIT
 static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 				enum dsi_cmd_set_type type)
+#else  /*VENDOR_EDIT*/
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/11/21
+ * Add for oppo display new structure
+*/
+const char *cmd_set_prop_map[];
+int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
+				enum dsi_cmd_set_type type)
+#endif /*VENDOR_EDIT*/
 {
 	int rc = 0, i = 0;
 	ssize_t len;
@@ -513,6 +627,13 @@ static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 	cmds = mode->priv_info->cmd_sets[type].cmds;
 	count = mode->priv_info->cmd_sets[type].count;
 	state = mode->priv_info->cmd_sets[type].state;
+
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/12/13
+ * Add for oppo display new structure
+*/
+	pr_err("dsi_cmd %s\n", cmd_set_prop_map[type]);
+#endif /*VENDOR_EDIT*/
 
 	if (count == 0) {
 		pr_debug("[%s] No commands to be sent for state(%d)\n",
@@ -618,10 +739,81 @@ static int dsi_panel_update_backlight(struct dsi_panel *panel,
 
 	dsi = &panel->mipi_device;
 
-	rc = mipi_dsi_dcs_set_display_brightness(dsi, bl_lvl);
-	if (rc < 0)
-		pr_err("failed to update dcs backlight:%d\n", bl_lvl);
+	#ifdef VENDOR_EDIT
+	//guoqiang.jiang@oppo.com,2019.03.27,add himax 18112a panel
+	if (bl_lvl > 2047) {
+		bl_lvl = 2047;
+	}
 
+	if (is_ktd3136 > 0) {
+		lm3697_lcd_backlight_set_level(bl_lvl);
+	} else {
+	#endif /* VENDOR_EDIT */
+
+    #ifndef VENDOR_EDIT
+    //liwei.a@PSW.MM.Display.LCD.Machine, 2019/05/12, add for setting backlight by dcs
+        rc = mipi_dsi_dcs_set_display_brightness(dsi, bl_lvl);
+    #else
+        rc = oppo_mipi_dsi_dcs_set_display_brightness(dsi, bl_lvl, is_ilitek_panel);
+    #endif
+        if (rc < 0)
+            pr_err("failed to update dcs backlight:%d\n", bl_lvl);
+    #ifdef VENDOR_EDIT
+    //liwei.a@PSW.MM.Display.LCD.Machine, 2019/05/12, add for setting backlight by dcs
+    }
+    #endif
+
+	return rc;
+}
+
+static int dsi_panel_update_pwm_backlight(struct dsi_panel *panel,
+	u32 bl_lvl)
+{
+	int rc = 0;
+	u32 duty = 0;
+	u32 period_ns = 0;
+	struct dsi_backlight_config *bl;
+
+	if (!panel) {
+		pr_err("Invalid Params\n");
+		return -EINVAL;
+	}
+
+	bl = &panel->bl_config;
+	if (!bl->pwm_bl) {
+		pr_err("pwm device not found\n");
+		return -EINVAL;
+	}
+
+	period_ns = bl->pwm_period_usecs * NSEC_PER_USEC;
+	duty = bl_lvl * period_ns;
+	duty /= bl->bl_max_level;
+
+	rc = pwm_config(bl->pwm_bl, duty, period_ns);
+	if (rc) {
+		pr_err("[%s] failed to change pwm config, rc=\n", panel->name,
+			rc);
+		goto error;
+	}
+
+	if (bl_lvl == 0 && bl->pwm_enabled) {
+		pwm_disable(bl->pwm_bl);
+		bl->pwm_enabled = false;
+		return 0;
+	}
+
+	if (!bl->pwm_enabled) {
+		rc = pwm_enable(bl->pwm_bl);
+		if (rc) {
+			pr_err("[%s] failed to enable pwm, rc=\n", panel->name,
+				rc);
+			goto error;
+		}
+
+		bl->pwm_enabled = true;
+	}
+
+error:
 	return rc;
 }
 
@@ -642,6 +834,9 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		rc = dsi_panel_update_backlight(panel, bl_lvl);
 		break;
 	case DSI_BACKLIGHT_EXTERNAL:
+		break;
+	case DSI_BACKLIGHT_PWM:
+		rc = dsi_panel_update_pwm_backlight(panel, bl_lvl);
 		break;
 	default:
 		pr_err("Backlight type(%d) not supported\n", bl->type);
@@ -667,6 +862,7 @@ static u32 dsi_panel_get_brightness(struct dsi_backlight_config *bl)
 		break;
 	case DSI_BACKLIGHT_DCS:
 	case DSI_BACKLIGHT_EXTERNAL:
+	case DSI_BACKLIGHT_PWM:
 	default:
 		/*
 		 * Ideally, we should read the backlight level from the
@@ -686,6 +882,22 @@ void dsi_panel_bl_handoff(struct dsi_panel *panel)
 	bl->bl_level = dsi_panel_get_brightness(bl);
 }
 
+static int dsi_panel_pwm_register(struct dsi_panel *panel)
+{
+	int rc = 0;
+	struct dsi_backlight_config *bl = &panel->bl_config;
+
+	bl->pwm_bl = devm_of_pwm_get(panel->parent, panel->panel_of_node, NULL);
+	if (IS_ERR_OR_NULL(bl->pwm_bl)) {
+		rc = PTR_ERR(bl->pwm_bl);
+		pr_err("[%s] failed to request pwm, rc=%d\n", panel->name,
+			rc);
+		return rc;
+	}
+
+	return 0;
+}
+
 static int dsi_panel_bl_register(struct dsi_panel *panel)
 {
 	int rc = 0;
@@ -702,6 +914,9 @@ static int dsi_panel_bl_register(struct dsi_panel *panel)
 		break;
 	case DSI_BACKLIGHT_EXTERNAL:
 		break;
+	case DSI_BACKLIGHT_PWM:
+		rc = dsi_panel_pwm_register(panel);
+		break;
 	default:
 		pr_err("Backlight type(%d) not supported\n", bl->type);
 		rc = -ENOTSUPP;
@@ -710,6 +925,13 @@ static int dsi_panel_bl_register(struct dsi_panel *panel)
 
 error:
 	return rc;
+}
+
+static void dsi_panel_pwm_unregister(struct dsi_panel *panel)
+{
+	struct dsi_backlight_config *bl = &panel->bl_config;
+
+	devm_pwm_put(panel->parent, bl->pwm_bl);
 }
 
 static int dsi_panel_bl_unregister(struct dsi_panel *panel)
@@ -727,6 +949,9 @@ static int dsi_panel_bl_unregister(struct dsi_panel *panel)
 		break;
 	case DSI_BACKLIGHT_EXTERNAL:
 		break;
+	case DSI_BACKLIGHT_PWM:
+		dsi_panel_pwm_unregister(panel);
+		break;
 	default:
 		pr_err("Backlight type(%d) not supported\n", bl->type);
 		rc = -ENOTSUPP;
@@ -742,7 +967,6 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 {
 	int rc = 0;
 	u64 tmp64 = 0;
-	u32 val = 0;
 	struct dsi_display_mode *display_mode;
 	struct dsi_display_mode_priv_info *priv_info;
 
@@ -762,17 +986,13 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 	display_mode->priv_info->clk_rate_hz = mode->clk_rate_hz;
 
 	rc = utils->read_u32(utils->data, "qcom,mdss-mdp-transfer-time-us",
-				&mode->mdp_transfer_time_us);
-	if (!rc)
-		display_mode->priv_info->mdp_transfer_time_us =
-			mode->mdp_transfer_time_us;
-	else
-		display_mode->priv_info->mdp_transfer_time_us =
-			DEFAULT_MDP_TRANSFER_TIME;
-
-	rc = utils->read_u32(utils->data, "qcom,mdss-dsi-overlap-pixels",
-				  &val);
-	priv_info->overlap_pixels = rc ? 0 : val;
+			&mode->mdp_transfer_time_us);
+	if (rc) {
+		pr_debug("fallback to default mdp-transfer-time-us\n");
+		mode->mdp_transfer_time_us = DEFAULT_MDP_TRANSFER_TIME;
+	}
+	display_mode->priv_info->mdp_transfer_time_us =
+					mode->mdp_transfer_time_us;
 
 	rc = utils->read_u32(utils->data,
 				"qcom,mdss-dsi-panel-framerate",
@@ -1568,6 +1788,32 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command",
 	"qcom,mdss-dsi-qsync-on-commands",
 	"qcom,mdss-dsi-qsync-off-commands",
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/4/28
+ * add for support aod,hbm,seed
+*/
+	"qcom,mdss-dsi-post-on-backlight",
+	"qcom,mdss-dsi-aod-on-command",
+	"qcom,mdss-dsi-aod-off-command",
+	"qcom,mdss-dsi-hbm-on-command",
+	"qcom,mdss-dsi-hbm-off-command",
+	"qcom,mdss-dsi-aod-hbm-on-command",
+	"qcom,mdss-dsi-aod-hbm-off-command",
+	"qcom,mdss-dsi-seed-0-command",
+	"qcom,mdss-dsi-seed-1-command",
+	"qcom,mdss-dsi-seed-2-command",
+	"qcom,mdss-dsi-seed-3-command",
+	"qcom,mdss-dsi-seed-4-command",
+	"qcom,mdss-dsi-seed-off-command",
+	"qcom,mdss-dsi-normal-hbm-on-command",
+	"qcom,mdss-dsi-aod-high-mode-command",
+	"qcom,mdss-dsi-aod-low-mode-command",
+    "qcom,mdss-dsi-cabc-off-command",
+    "qcom,mdss-dsi-cabc-low-mode-command",
+    "qcom,mdss-dsi-cabc-high-mode-command",
+    "qcom,mdss-dsi-permission-on-command",
+    "qcom,mdss-dsi-permission-off-command",
+#endif /*VENDOR_EDIT*/
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -1594,6 +1840,32 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command-state",
 	"qcom,mdss-dsi-qsync-on-commands-state",
 	"qcom,mdss-dsi-qsync-off-commands-state",
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/4/28
+ * add for support aod,hbm,seed
+*/
+	"qcom,mdss-dsi-post-on-backlight-state",
+	"qcom,mdss-dsi-aod-on-command-state",
+	"qcom,mdss-dsi-aod-off-command-state",
+	"qcom,mdss-dsi-hbm-on-command-state",
+	"qcom,mdss-dsi-hbm-off-command-state",
+	"qcom,mdss-dsi-aod-hbm-on-command-state",
+	"qcom,mdss-dsi-aod-hbm-off-command-state",
+	"qcom,mdss-dsi-seed-0-command-state",
+	"qcom,mdss-dsi-seed-1-command-state",
+	"qcom,mdss-dsi-seed-2-command-state",
+	"qcom,mdss-dsi-seed-3-command-state",
+	"qcom,mdss-dsi-seed-4-command-state",
+	"qcom,mdss-dsi-seed-off-command-state",
+	"qcom,mdss-dsi-normal-hbm-on-command-state",
+	"qcom,mdss-dsi-aod-high-mode-command-state",
+	"qcom,mdss-dsi-aod-low-mode-command-state",
+    "qcom,mdss-dsi-cabc-off-command-state",
+    "qcom,mdss-dsi-cabc-low-mode-command-state",
+    "qcom,mdss-dsi-cabc-high-mode-command-state",
+    "qcom,mdss-dsi-permission-on-command-state",
+    "qcom,mdss-dsi-permission-off-command-state",
+#endif /*VENDOR_EDIT*/
 };
 
 static int dsi_panel_get_cmd_pkt_count(const char *data, u32 length, u32 *cnt)
@@ -2047,33 +2319,13 @@ static int dsi_panel_parse_bl_pwm_config(struct dsi_panel *panel)
 	struct dsi_backlight_config *config = &panel->bl_config;
 	struct dsi_parser_utils *utils = &panel->utils;
 
-	rc = utils->read_u32(utils->data, "qcom,dsi-bl-pmic-bank-select",
+	rc = utils->read_u32(utils->data, "qcom,bl-pmic-pwm-period-usecs",
 				  &val);
 	if (rc) {
-		pr_err("bl-pmic-bank-select is not defined, rc=%d\n", rc);
-		goto error;
-	}
-	config->pwm_pmic_bank = val;
-
-	rc = utils->read_u32(utils->data, "qcom,dsi-bl-pmic-pwm-frequency",
-				  &val);
-	if (rc) {
-		pr_err("bl-pmic-bank-select is not defined, rc=%d\n", rc);
+		pr_err("bl-pmic-pwm-period-usecs is not defined, rc=%d\n", rc);
 		goto error;
 	}
 	config->pwm_period_usecs = val;
-
-	config->pwm_pmi_control = utils->read_bool(utils->data,
-						"qcom,mdss-dsi-bl-pwm-pmi");
-
-	config->pwm_gpio = utils->get_named_gpio(utils->data,
-					     "qcom,mdss-dsi-pwm-gpio",
-					     0);
-	if (!gpio_is_valid(config->pwm_gpio)) {
-		pr_err("pwm gpio is invalid\n");
-		rc = -EINVAL;
-		goto error;
-	}
 
 error:
 	return rc;
@@ -2152,6 +2404,16 @@ static int dsi_panel_parse_bl_config(struct dsi_panel *panel)
 		panel->bl_config.brightness_max_level = val;
 	}
 
+	rc = utils->read_u32(utils->data,
+			"qcom,mdss-dsi-bl-default-level", &val);
+	if (rc) {
+		panel->bl_config.brightness_default_level =
+			panel->bl_config.brightness_max_level;
+		pr_debug("set default brightness to max level\n");
+	} else {
+		panel->bl_config.brightness_default_level = val;
+	}
+
 	if (panel->bl_config.type == DSI_BACKLIGHT_PWM) {
 		rc = dsi_panel_parse_bl_pwm_config(panel);
 		if (rc) {
@@ -2165,9 +2427,17 @@ static int dsi_panel_parse_bl_config(struct dsi_panel *panel)
 					      "qcom,platform-bklight-en-gpio",
 					      0);
 	if (!gpio_is_valid(panel->bl_config.en_gpio)) {
-		pr_debug("[%s] failed get bklt gpio, rc=%d\n", panel->name, rc);
-		rc = 0;
-		goto error;
+		if (panel->bl_config.en_gpio == -EPROBE_DEFER) {
+			pr_debug("[%s] failed to get bklt gpio, rc=%d\n",
+						panel->name, rc);
+			rc = -EPROBE_DEFER;
+			goto error;
+		} else {
+			pr_debug("[%s] failed to get bklt gpio, rc=%d\n",
+						panel->name, rc);
+			rc = 0;
+			goto error;
+		}
 	}
 
 error:
@@ -2363,12 +2633,15 @@ int dsi_dsc_populate_static_param(struct msm_display_dsc_info *dsc)
 
 
 static int dsi_panel_parse_phy_timing(struct dsi_display_mode *mode,
-				struct dsi_parser_utils *utils)
+		struct dsi_parser_utils *utils, enum dsi_op_mode panel_mode)
 {
 	const char *data;
 	u32 len, i;
 	int rc = 0;
 	struct dsi_display_mode_priv_info *priv_info;
+	u64 h_period, v_period;
+	u32 refresh_rate = TICKS_IN_MICRO_SECOND;
+	struct dsi_mode_info *timing = NULL;
 
 	priv_info = mode->priv_info;
 
@@ -2388,9 +2661,24 @@ static int dsi_panel_parse_phy_timing(struct dsi_display_mode *mode,
 		priv_info->phy_timing_len = len;
 	};
 
-	mode->pixel_clk_khz = (DSI_H_TOTAL_DSC(&mode->timing) *
-			DSI_V_TOTAL(&mode->timing) *
-			mode->timing.refresh_rate) / 1000;
+	timing = &mode->timing;
+	if (!timing) {
+		pr_err("timing is null\n");
+		return -EINVAL;
+	}
+
+	if (panel_mode == DSI_OP_CMD_MODE) {
+		h_period = DSI_H_ACTIVE_DSC(timing);
+		v_period = timing->v_active;
+		do_div(refresh_rate, priv_info->mdp_transfer_time_us);
+	} else {
+		h_period = DSI_H_TOTAL_DSC(timing);
+		v_period = DSI_V_TOTAL(timing);
+		refresh_rate = timing->refresh_rate;
+	}
+
+	mode->pixel_clk_khz = (h_period * v_period * refresh_rate) / 1000;
+
 	return rc;
 }
 
@@ -2964,6 +3252,25 @@ static int dsi_panel_parse_esd_config(struct dsi_panel *panel)
 	esd_config->esd_enabled = utils->read_bool(utils->data,
 		"qcom,esd-check-enabled");
 
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/12/13
+ * Add for disable esd check while in test mode.
+*/
+	switch(get_boot_mode())
+	{
+		case MSM_BOOT_MODE__RF:
+		case MSM_BOOT_MODE__WLAN:
+		case MSM_BOOT_MODE__FACTORY:
+			esd_config->esd_enabled = 0x0;
+			pr_err("%s force disable esd check while in rf,wlan and factory mode, esd staus: 0x%x\n",
+						__func__, esd_config->esd_enabled);
+			break;
+
+		default:
+			break;
+	}
+#endif /*VENDOR_EDIT*/
+
 	if (!esd_config->esd_enabled)
 		return 0;
 
@@ -3062,6 +3369,25 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 	if (!panel->name)
 		panel->name = DSI_PANEL_DEFAULT_LABEL;
 
+	#ifdef VENDOR_EDIT
+	//liwei.a@PSW.MM.Display.LCD.Stability,2019/05/06, add for judging ilitek IC panel
+	if(NULL != strnstr(panel->name, "ili9881", strlen(panel->name))){
+		is_ilitek_panel = 1;
+	}
+
+	if (NULL != strnstr(panel->name, "inx", strlen(panel->name))) {
+		panel_which = 0;
+	} else if (NULL != strnstr(panel->name, "tm", strlen(panel->name))) {
+		panel_which = 1;
+	} else if (NULL != strnstr(panel->name, "auo", strlen(panel->name))) {
+		panel_which = 2;
+	} else if (NULL != strnstr(panel->name, "boe", strlen(panel->name))) {
+		panel_which = 3;
+	} else if (NULL != strnstr(panel->name, "hlt", strlen(panel->name))) {
+		panel_which = 4;
+	}
+	#endif
+
 	rc = dsi_panel_parse_host_config(panel);
 	if (rc) {
 		pr_err("failed to parse host configuration, rc=%d\n", rc);
@@ -3094,20 +3420,23 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 		pr_err("failed to parse panel physical dimension, rc=%d\n", rc);
 		goto error;
 	}
-
+pr_err("---dsi_panel_get---10\n", rc);
 	rc = dsi_panel_parse_gpios(panel);
 	if (rc) {
 		pr_err("failed to parse panel gpios, rc=%d\n", rc);
 		goto error;
 	}
+pr_err("---dsi_panel_get-1111\n", rc);
 
 	rc = dsi_panel_parse_power_cfg(panel);
 	if (rc)
 		pr_err("failed to parse power config, rc=%d\n", rc);
 
 	rc = dsi_panel_parse_bl_config(panel);
-	if (rc)
+	if (rc) {
 		pr_err("failed to parse backlight config, rc=%d\n", rc);
+		goto error;
+	}
 
 
 	rc = dsi_panel_parse_misc_features(panel);
@@ -3427,7 +3756,7 @@ int dsi_panel_get_mode(struct dsi_panel *panel,
 			pr_err(
 			"failed to parse panel jitter config, rc=%d\n", rc);
 
-		rc = dsi_panel_parse_phy_timing(mode, utils);
+		rc = dsi_panel_parse_phy_timing(mode, utils, panel->panel_mode);
 		if (rc) {
 			pr_err(
 			"failed to parse panel phy timings, rc=%d\n", rc);
@@ -3437,13 +3766,6 @@ int dsi_panel_get_mode(struct dsi_panel *panel,
 		rc = dsi_panel_parse_partial_update_caps(mode, utils);
 		if (rc)
 			pr_err("failed to partial update caps, rc=%d\n", rc);
-
-		/*
-		 * TODO: support pixel overlap for DSC enabled and Partial
-		 * update enabled case also.
-		 */
-		if (prv_info->dsc_enabled || prv_info->roi_caps.enabled)
-			prv_info->overlap_pixels = 0;
 	}
 	goto done;
 
@@ -3488,7 +3810,6 @@ int dsi_panel_get_host_cfg_for_mode(struct dsi_panel *panel,
 			mode->priv_info->mdp_transfer_time_us;
 	config->video_timing.dsc_enabled = mode->priv_info->dsc_enabled;
 	config->video_timing.dsc = &mode->priv_info->dsc;
-	config->video_timing.overlap_pixels = mode->priv_info->overlap_pixels;
 
 	if (dyn_clk_caps->dyn_clk_support)
 		config->bit_clk_rate_hz_override = mode->timing.clk_rate_hz;
@@ -3572,15 +3893,27 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.Lcd.Stability, 2018-11-21
+ * Add to mark power states
+*/
+	pr_err("%s\n", __func__);
+#endif
 	mutex_lock(&panel->panel_lock);
-	if (!panel->panel_initialized)
-		goto exit;
-
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_LP1);
 	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_LP1 cmd, rc=%d\n",
 		       panel->name, rc);
-exit:
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stable,2018-11-21
+ * Fix aod flash problem
+*/
+	panel->need_power_on_backlight = true;
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/11/21
+ * Set and save display status
+*/
+	set_oppo_display_power_status(OPPO_DISPLAY_POWER_DOZE);
+#endif
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -3594,15 +3927,23 @@ int dsi_panel_set_lp2(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.Lcd.Stability, 2018-05-31
+ * Add to mark power states
+*/
+	pr_err("%s\n", __func__);
+#endif
 	mutex_lock(&panel->panel_lock);
-	if (!panel->panel_initialized)
-		goto exit;
-
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_LP2);
 	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_LP2 cmd, rc=%d\n",
 		       panel->name, rc);
-exit:
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/11/21,
+ * Set and save display status
+*/
+	set_oppo_display_power_status(OPPO_DISPLAY_POWER_DOZE_SUSPEND);
+#endif
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -3616,15 +3957,23 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.Lcd.Stability, 2018-11-21
+ * Add to mark power states
+*/
+	pr_err("%s\n", __func__);
+#endif
 	mutex_lock(&panel->panel_lock);
-	if (!panel->panel_initialized)
-		goto exit;
-
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_NOLP);
 	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_NOLP cmd, rc=%d\n",
 		       panel->name, rc);
-exit:
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/11/21
+ * Set and save display status
+*/
+	set_oppo_display_power_status(OPPO_DISPLAY_POWER_ON);
+#endif
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -3648,6 +3997,12 @@ int dsi_panel_prepare(struct dsi_panel *panel)
 			goto error;
 		}
 	}
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stable,2018-07-17
+ * need wait 5ms after lp11 init
+*/
+	usleep_range(5 * 1000, 5 * 1000);
+#endif /* VENDOR_EDIT */
 
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_PRE_ON);
 	if (rc) {
@@ -3864,20 +4219,36 @@ int dsi_panel_post_switch(struct dsi_panel *panel)
 int dsi_panel_enable(struct dsi_panel *panel)
 {
 	int rc = 0;
-
+	dim_enable_tag = 0;
+	close_tag = 0;
+	test_dimming = 0;
 	if (!panel) {
 		pr_err("Invalid params\n");
 		return -EINVAL;
 	}
 
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.Lcd.Stability, 2018-05-31,add to mark power states*/
+	pr_err("%s\n", __func__);
+#endif
 	mutex_lock(&panel->panel_lock);
 
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ON);
-	if (rc)
+	if (rc) {
 		pr_err("[%s] failed to send DSI_CMD_SET_ON cmds, rc=%d\n",
 		       panel->name, rc);
-	else
-		panel->panel_initialized = true;
+	}
+	panel->panel_initialized = true;
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stable,2018-08-23
+ * avoid screen flash when esd reset
+*/
+	panel->need_power_on_backlight = true;
+/* Gou shengjun@PSW.MM.Display.LCD.Stable,2018-08-23
+ * add for save display panel power status at oppo display management
+*/
+	set_oppo_display_power_status(OPPO_DISPLAY_POWER_ON);
+#endif
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -3893,12 +4264,17 @@ int dsi_panel_post_enable(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
-	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_POST_ON);
-	if (rc) {
-		pr_err("[%s] failed to send DSI_CMD_SET_POST_ON cmds, rc=%d\n",
+    pr_err("[oppo_test] is_ktd3136=%d\n", is_ktd3136);
+
+    if (is_ktd3136 > 0) {
+        rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_POST_ON);
+        if (rc) {
+            pr_err("[%s] failed to send DSI_CMD_SET_POST_ON cmds, rc=%d\n",
 		       panel->name, rc);
-		goto error;
-	}
+            goto error;
+        }
+    }
+
 error:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -3915,12 +4291,14 @@ int dsi_panel_pre_disable(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
-	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_PRE_OFF);
-	if (rc) {
-		pr_err("[%s] failed to send DSI_CMD_SET_PRE_OFF cmds, rc=%d\n",
+    if(is_ktd3136 > 0){
+        rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_PRE_OFF);
+        if (rc) {
+            pr_err("[%s] failed to send DSI_CMD_SET_PRE_OFF cmds, rc=%d\n",
 		       panel->name, rc);
-		goto error;
-	}
+            goto error;
+        }
+    }
 
 error:
 	mutex_unlock(&panel->panel_lock);
@@ -3936,8 +4314,17 @@ int dsi_panel_disable(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.Lcd.Stability, 2018-11-21
+ * Add to mark power states
+*/
+	pr_err("%s\n", __func__);
+#endif
 	mutex_lock(&panel->panel_lock);
-
+#ifdef VENDOR_EDIT
+/* Ping.Zhang@PSW.BSP.TP.Function, 2019/04/26, Add for TP common code */
+	tp_ftm_extra();
+#endif /* VENDOR_EDIT */
 	/* Avoid sending panel off commands when ESD recovery is underway */
 	if (!atomic_read(&panel->esd_recovery_pending)) {
 		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_OFF);
@@ -3954,7 +4341,13 @@ int dsi_panel_disable(struct dsi_panel *panel)
 		}
 	}
 	panel->panel_initialized = false;
+#ifdef VENDOR_EDIT
 
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/11/21
+ * add for save display panel power status at oppo display management
+*/
+	set_oppo_display_power_status(OPPO_DISPLAY_POWER_OFF);
+#endif
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -3977,6 +4370,19 @@ int dsi_panel_unprepare(struct dsi_panel *panel)
 		goto error;
 	}
 
+	#ifdef VENDOR_EDIT
+	//liwei.a@PSW.MM.Display.LCD.Stabiity, 2019/06/20, add for close lcd panel power in lp11 when shutdown
+	if (shutdown_flag == 1) {
+		rc = dsi_panel_power_off(panel);
+
+		if (rc) {
+			pr_err("[%s] panel power_Off failed, rc=%d\n",
+				panel->name, rc);
+			goto error;
+		}
+	}
+	#endif
+
 error:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -3993,12 +4399,21 @@ int dsi_panel_post_unprepare(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
-	rc = dsi_panel_power_off(panel);
-	if (rc) {
-		pr_err("[%s] panel power_Off failed, rc=%d\n",
-		       panel->name, rc);
-		goto error;
+	#ifdef VENDOR_EDIT
+	//liwei.a@PSW.MM.Display.LCD.Stabiity, 2019/06/20, add for close lcd panel power in lp11 when shutdown
+	if (shutdown_flag == 0) {
+	#endif
+		rc = dsi_panel_power_off(panel);
+
+		if (rc) {
+			pr_err("[%s] panel power_Off failed, rc=%d\n",
+				panel->name, rc);
+			goto error;
+		}
+	#ifdef VENDOR_EDIT
+	//liwei.a@PSW.MM.Display.LCD.Stabiity, 2019/06/20, add for close lcd panel power in lp11 when shutdown
 	}
+	#endif
 error:
 	mutex_unlock(&panel->panel_lock);
 	return rc;

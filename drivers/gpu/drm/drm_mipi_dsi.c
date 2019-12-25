@@ -35,6 +35,10 @@
 
 #include <video/mipi_display.h>
 
+int test_dimming = 0;
+int close_tag = 0;
+int dim_enable_tag = 0;
+
 /**
  * DOC: dsi helpers
  *
@@ -365,6 +369,26 @@ static ssize_t mipi_dsi_device_transfer(struct mipi_dsi_device *dsi,
 	return ops->transfer(dsi->host, msg);
 }
 
+#ifdef VENDOR_EDIT
+//liwei.a@PSW.MM.Display.Stability, 2019/07/29, add for transfer all command in once
+static ssize_t oppo_mipi_dsi_device_transfer(struct mipi_dsi_device *dsi,
+					struct mipi_dsi_msg *msg, u8 last)
+{
+	const struct mipi_dsi_host_ops *ops = dsi->host->ops;
+
+	if (!ops || !ops->transfer)
+		return -ENOSYS;
+
+	if (dsi->mode_flags & MIPI_DSI_MODE_LPM)
+		msg->flags |= MIPI_DSI_MSG_USE_LPM;
+
+	if (last)
+		msg->flags |= MIPI_DSI_MSG_LASTCOMMAND;
+
+	return ops->transfer(dsi->host, msg);
+}
+#endif
+
 /**
  * mipi_dsi_packet_format_is_short - check if a packet is of the short format
  * @type: MIPI DSI data type of the packet
@@ -680,6 +704,46 @@ ssize_t mipi_dsi_dcs_write_buffer(struct mipi_dsi_device *dsi,
 }
 EXPORT_SYMBOL(mipi_dsi_dcs_write_buffer);
 
+#ifdef VENDOR_EDIT
+//liwei.a@PSW.MM.Display.Stability, 2019/07/29, add for transfer all command in once
+ssize_t oppo_mipi_dsi_write_buffer(struct mipi_dsi_device *dsi,
+				  const void *data, size_t len, u8 last, int is_ili)
+{
+	struct mipi_dsi_msg msg = {
+		.channel = dsi->channel,
+		.tx_buf = data,
+		.tx_len = len
+	};
+
+	switch (len) {
+	case 0:
+		return -EINVAL;
+
+	case 1:
+		msg.type = MIPI_DSI_DCS_SHORT_WRITE;
+		break;
+
+	case 2:
+		if (is_ili == 1) {
+			msg.type = MIPI_DSI_GENERIC_LONG_WRITE;
+		} else {
+			msg.type = MIPI_DSI_DCS_SHORT_WRITE_PARAM;
+		}
+		break;
+
+	default:
+		if (is_ili == 1) {
+			msg.type = MIPI_DSI_GENERIC_LONG_WRITE;
+		} else {
+			msg.type = MIPI_DSI_DCS_LONG_WRITE;
+		}
+		break;
+	}
+
+	return oppo_mipi_dsi_device_transfer(dsi, &msg, last);
+}
+#endif
+
 /**
  * mipi_dsi_dcs_write() - send DCS write command
  * @dsi: DSI peripheral device
@@ -723,6 +787,39 @@ ssize_t mipi_dsi_dcs_write(struct mipi_dsi_device *dsi, u8 cmd,
 	return err;
 }
 EXPORT_SYMBOL(mipi_dsi_dcs_write);
+
+#ifdef VENDOR_EDIT
+//liwei.a@PSW.MM.Display.Stability, 2019/07/29, add for transfer all command in once
+ssize_t oppo_mipi_dsi_write(struct mipi_dsi_device *dsi, u8 cmd,
+			   const void *data, size_t len, u8 last, int is_ili)
+{
+	ssize_t err;
+	size_t size;
+	u8 *tx;
+
+	if (len > 0) {
+		size = 1 + len;
+
+		tx = kmalloc(size, GFP_KERNEL);
+		if (!tx)
+			return -ENOMEM;
+
+		/* concatenate the DCS command byte and the payload */
+		tx[0] = cmd;
+		memcpy(&tx[1], data, len);
+	} else {
+		tx = &cmd;
+		size = 1;
+	}
+
+	err = oppo_mipi_dsi_write_buffer(dsi, tx, size, last, is_ili);
+
+	if (len > 0)
+		kfree(tx);
+
+	return err;
+}
+#endif
 
 /**
  * mipi_dsi_dcs_read() - send DCS read request command
@@ -1055,7 +1152,13 @@ EXPORT_SYMBOL(mipi_dsi_dcs_set_tear_scanline);
 int mipi_dsi_dcs_set_display_brightness(struct mipi_dsi_device *dsi,
 					u16 brightness)
 {
+	#ifndef VENDOR_EDIT
+	//liwei.a@oppo.com, 2019.04.18, first params should be the higher bit of 0x51h
 	u8 payload[2] = { brightness & 0xff, brightness >> 8 };
+	#else
+	u8 payload[2] = { brightness >> 8, brightness & 0xff };
+	#endif
+
 	ssize_t err;
 
 	err = mipi_dsi_dcs_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
@@ -1066,6 +1169,129 @@ int mipi_dsi_dcs_set_display_brightness(struct mipi_dsi_device *dsi,
 	return 0;
 }
 EXPORT_SYMBOL(mipi_dsi_dcs_set_display_brightness);
+
+#ifdef VENDOR_EDIT
+/**
+ * oppo_mipi_dsi_dcs_set_display_brightness() - sets the brightness value of the
+ *    display
+ * @dsi: DSI peripheral device
+ * @brightness: brightness value
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int oppo_mipi_dsi_dcs_set_display_brightness(struct mipi_dsi_device *dsi,
+					u16 brightness,  int is_ili)
+{
+	ssize_t err;
+	u8 payload[2] = {0x00, 0x00};
+	u8 ppl = 0x2C;
+	u8 pdl = 0x28;
+	u8 pdon = 0x24;
+	u8 ili_per_on[3] = {0x98, 0x81, 0x00};
+	u8 ili_per_off[3] = {0x98, 0x81, 0x0F};
+	u8 nt_per1 = 0x10;
+	u8 nt_per2 = 0xAA;
+	u8 nt_per3 = 0x55;
+	u8 nt_per4 = 0x66;
+	u8 nt_per5 = 0x99;
+
+	if (is_ili == 1) {
+		err = oppo_mipi_dsi_write(dsi, 0xFF, ili_per_on, 3, 0, 1);
+		if (err < 0) {
+			printk(KERN_ERR "[oppo_test] ili 0xFF write 0x98 0x81 0x00 error\n");
+			return err;
+		}
+		brightness =  brightness << 1;
+	} else {
+		err = oppo_mipi_dsi_write(dsi, 0xFF, &nt_per1, 1, 0, 0);
+		err = oppo_mipi_dsi_write(dsi, 0xF0, &nt_per2, 1, 0, 0);
+		err = oppo_mipi_dsi_write(dsi, 0xF1, &nt_per3, 1, 0, 0);
+		err = oppo_mipi_dsi_write(dsi, 0xF2, &nt_per5, 1, 0, 0);
+		if (err < 0) {
+			printk(KERN_ERR "[oppo_test] NT 0xFF write 0x10 open permission error\n");
+			return err;
+		}
+	}
+
+	payload[0] = brightness >> 8;
+	payload[1] = brightness & 0xff;
+
+	//close dimming function when suspend or shutdown (BL:1->0)
+	if (test_dimming == 2) {
+		if (brightness == 0) {
+			err = oppo_mipi_dsi_write(dsi, MIPI_DCS_WRITE_CONTROL_DISPLAY, &pdl, 1, 0, is_ili);
+			printk(KERN_ERR "[oppo_test] 0x53 write 0x28\n");
+			if (err < 0) {
+				printk(KERN_ERR "[oppo_test] 0x53 write 0x28 error\n");
+				return err;
+			}
+			close_tag = 1;
+			dim_enable_tag = 0;
+		} else {
+			if (close_tag == 1) {
+				err = oppo_mipi_dsi_write(dsi, MIPI_DCS_WRITE_CONTROL_DISPLAY, &pdon, 1, 0, is_ili);
+				printk(KERN_ERR "[oppo_test] 0x53 write 0x24\n");
+				if (err < 0) {
+					printk(KERN_ERR "[oppo_test] 0x53 write 0x24 error\n");
+					return err;
+				}
+				close_tag = 0;
+			}
+
+			if (dim_enable_tag <= 1) {
+				dim_enable_tag++;
+			}
+			if (dim_enable_tag == 2) {
+				err = oppo_mipi_dsi_write(dsi, MIPI_DCS_WRITE_CONTROL_DISPLAY, &ppl, 1, 0, is_ili);
+				printk(KERN_ERR "[oppo_test] 0x53 write 0x2c\n");
+				if (err < 0) {
+					printk(KERN_ERR "[oppo_test] 0x53 write 0x2c error\n");
+					return err;
+				}
+				dim_enable_tag++;
+			}
+		}
+	} else if (test_dimming <= 1) {
+		err = oppo_mipi_dsi_write(dsi, MIPI_DCS_WRITE_CONTROL_DISPLAY, &pdon, 1, 0 , is_ili);
+		printk(KERN_ERR "[oppo_test] 0x53 write 0x24\n");
+		if (err < 0) {
+			printk(KERN_ERR "[oppo_test] 0x53 write 0x24 error (dimming=1)\n");
+			return err;
+		}
+	}
+
+	err = oppo_mipi_dsi_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+				 payload, sizeof(payload), 0, is_ili);
+	if (err < 0) {
+		printk(KERN_ERR "[oppo_test] 0x51 write 0x%x 0x%x error\n", payload[0], payload[1]);
+		return err;
+	}
+
+	if (test_dimming <= 1)
+		test_dimming++;
+
+	if (is_ili == 1) {
+		err = oppo_mipi_dsi_write(dsi, 0xFF, ili_per_off, 3, 1, 1);
+		if (err < 0) {
+			printk(KERN_ERR "[oppo_test] ili 0xFF write 0x98 0x81 0x0F error\n");
+			return err;
+		}
+	} else {
+		err = oppo_mipi_dsi_write(dsi, 0xFF, &nt_per1, 1, 0, 0);
+		err = oppo_mipi_dsi_write(dsi, 0xF0, &nt_per3, 1, 0, 0);
+		err = oppo_mipi_dsi_write(dsi, 0xF1, &nt_per2, 1, 0, 0);
+		err = oppo_mipi_dsi_write(dsi, 0xF2, &nt_per4, 1, 1, 0);
+		if (err < 0) {
+			printk(KERN_ERR "[oppo_test] NT 0xFF write 0x10 close permission error\n");
+			return err;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(oppo_mipi_dsi_dcs_set_display_brightness);
+
+#endif
 
 /**
  * mipi_dsi_dcs_get_display_brightness() - gets the current brightness value

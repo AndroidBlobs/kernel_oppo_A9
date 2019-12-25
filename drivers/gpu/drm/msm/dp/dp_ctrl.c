@@ -177,7 +177,6 @@ static void dp_ctrl_configure_source_link_params(struct dp_ctrl_private *ctrl,
 				ctrl->link->link_params.lane_count);
 		ctrl->catalog->mainlink_levels(ctrl->catalog,
 				ctrl->link->link_params.lane_count);
-		ctrl->catalog->fec_config(ctrl->catalog, false);
 		ctrl->catalog->mainlink_ctrl(ctrl->catalog, true);
 	} else {
 		ctrl->catalog->mainlink_ctrl(ctrl->catalog, false);
@@ -408,7 +407,7 @@ static int dp_ctrl_link_training_2(struct dp_ctrl_private *ctrl)
 	}
 	ctrl->catalog->set_pattern(ctrl->catalog, pattern);
 	ret = dp_ctrl_train_pattern_set(ctrl,
-		pattern | DP_RECOVERED_CLOCK_OUT_EN);
+		pattern | DP_LINK_SCRAMBLING_DISABLE);
 	if (ret <= 0) {
 		ret = -EINVAL;
 		goto end;

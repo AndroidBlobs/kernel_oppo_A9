@@ -29,6 +29,12 @@
 #include "dsi_pwr.h"
 #include "dsi_parser.h"
 #include "msm_drv.h"
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/11/21
+ * Add for save display panel power status at oppo display management
+*/
+#include <linux/dsi_oppo_support.h>
+#endif /*VENDOR_EDIT*/
 
 #define MAX_BL_LEVEL 4096
 #define MAX_BL_SCALE_LEVEL 1024
@@ -105,16 +111,16 @@ struct dsi_backlight_config {
 	u32 bl_min_level;
 	u32 bl_max_level;
 	u32 brightness_max_level;
+	u32 brightness_default_level;
 	u32 bl_level;
 	u32 bl_scale;
 	u32 bl_scale_ad;
 
 	int en_gpio;
 	/* PWM params */
-	bool pwm_pmi_control;
-	u32 pwm_pmic_bank;
+	struct pwm_device *pwm_bl;
+	bool pwm_enabled;
 	u32 pwm_period_usecs;
-	int pwm_gpio;
 
 	/* WLED params */
 	struct led_trigger *wled;
@@ -204,6 +210,13 @@ struct dsi_panel {
 	enum dsi_dms_mode dms_mode;
 
 	bool sync_broadcast_en;
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.Service.Feature,2018/11/21
+ * For OnScreenFingerprint feature
+*/
+	/* Fix aod flash problem */
+	bool need_power_on_backlight;
+#endif
 };
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)
@@ -310,5 +323,11 @@ struct dsi_panel *dsi_panel_ext_bridge_get(struct device *parent,
 int dsi_panel_parse_esd_reg_read_configs(struct dsi_panel *panel);
 
 void dsi_panel_ext_bridge_put(struct dsi_panel *panel);
-
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/11/21
+ * Add for oppo display new structure
+*/
+int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
+			   enum dsi_cmd_set_type type);
+#endif
 #endif /* _DSI_PANEL_H_ */

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -143,7 +143,7 @@ static const u32 cdm_flush_tbl[CDM_MAX] = {SDE_NONE, 0};
 /**
  * list of CWB bits in CTL_CWB_FLUSH
  */
-static const u32 cwb_flush_tbl[CWB_MAX] = {SDE_NONE, SDE_NONE, SDE_NONE, 2, 3,
+static const u32 cwb_flush_tbl[CWB_MAX] = {SDE_NONE, SDE_NONE, 1, 2, 3,
 	4, 5};
 
 /**
@@ -576,7 +576,7 @@ static inline int sde_hw_ctl_update_bitmask_cwb_v1(struct sde_hw_ctl *ctx,
 	if (!ctx)
 		return -EINVAL;
 
-	if ((cwb < CWB_2) || (cwb >= CWB_MAX)) {
+	if ((cwb < CWB_1) || (cwb >= CWB_MAX)) {
 		SDE_ERROR("Unsupported cwb %d\n", cwb);
 		return -EINVAL;
 	}
@@ -804,8 +804,6 @@ static void sde_hw_ctl_setup_blendstage(struct sde_hw_ctl *ctx,
 	else
 		pipes_per_stage = 1;
 
-	mixercfg = CTL_MIXER_BORDER_OUT; /* always set BORDER_OUT */
-
 	if (!stage_cfg)
 		goto exit;
 
@@ -912,6 +910,10 @@ static void sde_hw_ctl_setup_blendstage(struct sde_hw_ctl *ctx,
 	}
 
 exit:
+	if ((!mixercfg && !mixercfg_ext && !mixercfg_ext2 && !mixercfg_ext3) ||
+			(stage_cfg && !stage_cfg->stage[0][0]))
+		mixercfg |= CTL_MIXER_BORDER_OUT;
+
 	SDE_REG_WRITE(c, CTL_LAYER(lm), mixercfg);
 	SDE_REG_WRITE(c, CTL_LAYER_EXT(lm), mixercfg_ext);
 	SDE_REG_WRITE(c, CTL_LAYER_EXT2(lm), mixercfg_ext2);

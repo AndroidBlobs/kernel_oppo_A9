@@ -36,6 +36,16 @@
 		value;\
 	})
 
+#define DSI_H_ACTIVE_DSC(t) \
+	({\
+		u64 value;\
+		if ((t)->dsc_enabled && (t)->dsc)\
+			value = (t)->dsc->pclk_per_line;\
+		else\
+			value = (t)->h_active;\
+		value;\
+	})
+
 #define DSI_DEBUG_NAME_LEN		32
 #define display_for_each_ctrl(index, display) \
 	for (index = 0; (index < (display)->ctrl_count) &&\
@@ -249,6 +259,25 @@ enum dsi_dfps_type {
  * @DSI_CMD_SET_POST_TIMING_SWITCH:        Post timing switch
  * @DSI_CMD_SET_QSYNC_ON                   Enable qsync mode
  * @DSI_CMD_SET_QSYNC_OFF                  Disable qsync mode
+ #ifdef VENDOR_EDIT
+ * @ Gou shengjun@PSW.MM.Display.LCD.Stability,2018/12/14, add for lcd notes
+ * @DSI_CMD_POST_ON_BACKLIGHT:             Panel on cmd send for AOD and Fingerprint
+ * @DSI_CMD_AOD_ON:                        Panel AOD on cmd
+ * @DSI_CMD_AOD_OFF:                       Panel AOD off cmd
+ * @DSI_CMD_HBM_ON:                        Panel Fingerprint high brightness 670nit on cmd
+ * @DSI_CMD_HBM_OFF:                       Panel Fingerprint high brightness off cmd
+ * @DSI_CMD_AOD_HBM_ON:                    Panel AOD and Fingerprint high brightness  670nit on cmd
+ * @DSI_CMD_AOD_HBM_OFF:                   Panel AOD and Fingerprint high brightness off cmd
+ * @DSI_CMD_SEED_DCI_P3:                   Panel seed level 3 cmd
+ * @DSI_CMD_SEED_SRGB:                     Panel seed SRGB mode cmd
+ * @DSI_CMD_SEED_OFF:                      Panel seed off cmd
+ * @DSI_CMD_NORMAL_HBM_ON:                 Panel normal HBM 600nit on cmd
+ * @DSI_CMD_CABC_OFF:                      Shutdown IC CABC cmd
+ * @DSI_CMD_CABC_LOW_LEVEL:                Load 11.5% CABC cmd
+ * @DSI_CMD_CABC_HIGH_LEVEL,               Load 25% CABC cmd
+ * @DSI_CMD_PERMISSION_ON,                 unlock ic, new cmd will take effect
+ * @DSI_CMD_PERMISSION_OFF,                lock ic, new cmd will not take effect
+#endif
  * @DSI_CMD_SET_MAX
  */
 enum dsi_cmd_set_type {
@@ -275,6 +304,33 @@ enum dsi_cmd_set_type {
 	DSI_CMD_SET_POST_TIMING_SWITCH,
 	DSI_CMD_SET_QSYNC_ON,
 	DSI_CMD_SET_QSYNC_OFF,
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Stability,2018/07/03
+ * optimize screen on
+*/
+	DSI_CMD_POST_ON_BACKLIGHT,
+	DSI_CMD_AOD_ON,
+	DSI_CMD_AOD_OFF,
+	DSI_CMD_HBM_ON,
+	DSI_CMD_HBM_OFF,
+	DSI_CMD_AOD_HBM_ON,
+	DSI_CMD_AOD_HBM_OFF,
+/*mark.yao@PSW.MM.Display.LCD.Stability,2018/4/28,add for sRGB and DCI-P3*/
+	DSI_CMD_SEED_MODE0,
+	DSI_CMD_SEED_MODE1,
+	DSI_CMD_SEED_MODE2,
+	DSI_CMD_SEED_MODE3,
+	DSI_CMD_SEED_MODE4,
+	DSI_CMD_SEED_OFF,
+	DSI_CMD_NORMAL_HBM_ON,
+	DSI_CMD_AOD_HIGH_LIGHT_MODE,
+	DSI_CMD_AOD_LOW_LIGHT_MODE,
+	DSI_CMD_CABC_OFF,
+	DSI_CMD_CABC_LOW_MODE,
+	DSI_CMD_CABC_HIGH_MODE,
+	DSI_CMD_PERMISSION_ON,
+	DSI_CMD_PERMISSION_OFF,
+#endif
 	DSI_CMD_SET_MAX
 };
 
@@ -379,7 +435,6 @@ struct dsi_panel_cmd_set {
  * @clk_rate_hz:      DSI bit clock rate per lane in Hz.
  * @mdp_transfer_time_us:   Specifies the mdp transfer time for command mode
  *                    panels in microseconds.
- * @overlap_pixels:   overlap pixels for certain panels.
  * @dsc_enabled:      DSC compression enabled.
  * @dsc:              DSC compression configuration.
  * @roi_caps:         Panel ROI capabilities.
@@ -401,7 +456,6 @@ struct dsi_mode_info {
 	u32 refresh_rate;
 	u64 clk_rate_hz;
 	u32 mdp_transfer_time_us;
-	u32 overlap_pixels;
 	bool dsc_enabled;
 	struct msm_display_dsc_info *dsc;
 	struct msm_roi_caps roi_caps;
@@ -552,7 +606,6 @@ struct dsi_host_config {
  * @mdp_transfer_time_us:   Specifies the mdp transfer time for command mode
  *                          panels in microseconds.
  * @clk_rate_hz:          DSI bit clock per lane in hz.
- * @overlap_pixels:       overlap pixels for certain panels.
  * @topology:             Topology selected for the panel
  * @dsc:                  DSC compression info
  * @dsc_enabled:          DSC compression enabled
@@ -569,7 +622,6 @@ struct dsi_display_mode_priv_info {
 	u32 panel_prefill_lines;
 	u32 mdp_transfer_time_us;
 	u64 clk_rate_hz;
-	u32 overlap_pixels;
 
 	struct msm_display_topology topology;
 	struct msm_display_dsc_info dsc;

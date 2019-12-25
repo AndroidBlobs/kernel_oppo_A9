@@ -6,6 +6,7 @@ ccflags-$(CONFIG_DRM_MSM_DSI_PLL) += -Idrivers/gpu/drm/msm/dsi
 ccflags-y += -Idrivers/gpu/drm/msm/sde
 ccflags-y += -Idrivers/media/platform/msm/sde/rotator
 ccflags-y += -Idrivers/gpu/drm/msm/hdmi
+ccflags-$(CONFIG_DRM_SDE_SHD) += -Idrivers/gpu/drm/msm/shd
 
 msm_drm-y := \
 	dp/dp_usbpd.o \
@@ -49,7 +50,8 @@ msm_drm-y := \
 	sde/sde_hw_ad4.o \
 	sde_edid_parser.o \
 	sde_hdcp_1x.o \
-	sde_hdcp_2x.o
+	sde_hdcp_2x.o \
+	lm3697_bl.o
 
 msm_drm-$(CONFIG_DRM_MSM_HDMI) += hdmi/hdmi.o \
 	hdmi/hdmi_audio.o \
@@ -152,6 +154,8 @@ msm_drm-$(CONFIG_DRM_MSM_DSI_STAGING) += dsi-staging/dsi_phy.o \
 				dsi-staging/dsi_display.o \
 				dsi-staging/dsi_panel.o \
 				dsi-staging/dsi_clk_manager.o \
+				dsi-staging/dsi_oppo_support.o \
+				dsi-staging/oppo_display_private_api.o\
 				dsi-staging/dsi_display_test.o
 
 msm_drm-$(CONFIG_DSI_PARSER) += dsi-staging/dsi_parser.o
@@ -185,6 +189,10 @@ msm_drm-$(CONFIG_DRM_MSM) += \
 
 msm_drm-$(CONFIG_DRM_SDE_WB) += sde/sde_wb.o \
 	sde/sde_encoder_phys_wb.o
+
+msm_drm-$(CONFIG_DRM_SDE_SHD) += shd/shd_drm.o \
+	shd/shd_hw.o \
+	shd/sde_encoder_phys_shd.o
 
 msm_drm-$(CONFIG_DRM_MSM) += \
 	msm_atomic.o \

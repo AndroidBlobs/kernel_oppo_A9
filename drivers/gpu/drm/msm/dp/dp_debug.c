@@ -50,7 +50,6 @@ struct dp_debug_private {
 	struct dp_debug dp_debug;
 	struct dp_parser *parser;
 	struct dp_ctrl *ctrl;
-	struct dp_power *power;
 	struct mutex lock;
 };
 
@@ -765,7 +764,7 @@ static ssize_t dp_debug_write_exe_mode(struct file *file,
 		const char __user *user_buff, size_t count, loff_t *ppos)
 {
 	struct dp_debug_private *debug = file->private_data;
-	char *buf;
+	char buf[SZ_32];
 	size_t len = 0;
 
 	if (!debug)
@@ -775,7 +774,9 @@ static ssize_t dp_debug_write_exe_mode(struct file *file,
 		return 0;
 
 	len = min_t(size_t, count, SZ_32 - 1);
-	buf = memdup_user(user_buff, len);
+	if (copy_from_user(buf, user_buff, len))
+		goto end;
+
 	buf[len] = '\0';
 
 	if (sscanf(buf, "%3s", debug->exe_mode) != 1)
@@ -1460,7 +1461,6 @@ static void dp_debug_set_sim_mode(struct dp_debug_private *debug, bool sim)
 		}
 
 		debug->dp_debug.sim_mode = true;
-		debug->power->sim_mode = true;
 		debug->aux->set_sim_mode(debug->aux, true,
 			debug->edid, debug->dpcd);
 	} else {
@@ -1468,7 +1468,6 @@ static void dp_debug_set_sim_mode(struct dp_debug_private *debug, bool sim)
 		debug->ctrl->abort(debug->ctrl);
 
 		debug->aux->set_sim_mode(debug->aux, false, NULL, NULL);
-		debug->power->sim_mode = false;
 		debug->dp_debug.sim_mode = false;
 
 		debug->panel->set_edid(debug->panel, 0);
@@ -1944,17 +1943,6 @@ static int dp_debug_init(struct dp_debug *dp_debug)
 		goto error_remove_dir;
 	}
 
-	file = debugfs_create_bool("hdcp_wait_sink_sync", 0644, dir,
-			&debug->dp_debug.hdcp_wait_sink_sync);
-
-	if (IS_ERR_OR_NULL(file)) {
-		rc = PTR_ERR(file);
-		pr_err("[%s] debugfs hdcp_wait_sink_sync failed, rc=%d\n",
-		       DEBUG_NAME, rc);
-		goto error_remove_dir;
-	}
-
-
 	file = debugfs_create_bool("dsc_feature_enable", 0644, dir,
 			&debug->parser->dsc_feature_enable);
 	if (IS_ERR_OR_NULL(file)) {
@@ -2052,7 +2040,6 @@ struct dp_debug *dp_debug_get(struct dp_debug_in *in)
 	debug->catalog = in->catalog;
 	debug->parser = in->parser;
 	debug->ctrl = in->ctrl;
-	debug->power = in->power;
 
 	dp_debug = &debug->dp_debug;
 	dp_debug->vdisplay = 0;

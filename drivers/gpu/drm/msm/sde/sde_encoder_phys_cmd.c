@@ -214,7 +214,6 @@ static void sde_encoder_phys_cmd_pp_tx_done_irq(void *arg, int irq_idx)
 				phys_enc,
 				SDE_ENCODER_FRAME_EVENT_SIGNAL_RETIRE_FENCE);
 		atomic_add_unless(&phys_enc->pending_ctlstart_cnt, -1, 0);
-		atomic_set(&phys_enc->ctlstart_timeout, 0);
 	}
 
 	/* notify all synchronous clients first, then asynchronous clients */
@@ -318,7 +317,6 @@ static void sde_encoder_phys_cmd_ctl_start_irq(void *arg, int irq_idx)
 
 	ctl = phys_enc->hw_ctl;
 	atomic_add_unless(&phys_enc->pending_ctlstart_cnt, -1, 0);
-	atomic_set(&phys_enc->ctlstart_timeout, 0);
 
 	time_diff_us = ktime_us_delta(ktime_get(), cmd_enc->rd_ptr_timestamp);
 
@@ -1127,8 +1125,8 @@ static void _sde_encoder_phys_cmd_pingpong_config(
 			phys_enc->hw_pp->idx - PINGPONG_0);
 	drm_mode_debug_printmodeline(&phys_enc->cached_mode);
 
-	_sde_encoder_phys_cmd_update_intf_cfg(phys_enc);
-
+	if (!_sde_encoder_phys_is_ppsplit_slave(phys_enc))
+		_sde_encoder_phys_cmd_update_intf_cfg(phys_enc);
 	sde_encoder_phys_cmd_tearcheck_config(phys_enc);
 }
 
@@ -1144,8 +1142,18 @@ static void sde_encoder_phys_cmd_enable_helper(
 
 	_sde_encoder_phys_cmd_pingpong_config(phys_enc);
 
+	/*
+	 * For pp-split, skip setting the flush bit for the slave intf, since
+	 * both intfs use same ctl and HW will only flush the master.
+	 */
+	if (_sde_encoder_phys_is_ppsplit(phys_enc) &&
+		!sde_encoder_phys_cmd_is_master(phys_enc))
+		goto skip_flush;
+
 	_sde_encoder_phys_cmd_update_flush_mask(phys_enc);
 
+skip_flush:
+	return;
 }
 
 static void sde_encoder_phys_cmd_enable(struct sde_encoder_phys *phys_enc)
@@ -1294,7 +1302,6 @@ static void sde_encoder_phys_cmd_disable(struct sde_encoder_phys *phys_enc)
 		SDE_ERROR("invalid encoder\n");
 		return;
 	}
-	atomic_set(&phys_enc->ctlstart_timeout, 0);
 	SDE_DEBUG_CMDENC(cmd_enc, "pp %d intf %d state %d\n",
 			phys_enc->hw_pp->idx - PINGPONG_0,
 			phys_enc->hw_intf->idx - INTF_0,
@@ -1463,7 +1470,6 @@ static int _sde_encoder_phys_cmd_wait_for_ctl_start(
 				 SDE_ENCODER_FRAME_EVENT_SIGNAL_RETIRE_FENCE);
 			atomic_add_unless(
 				&phys_enc->pending_ctlstart_cnt, -1, 0);
-			atomic_inc_return(&phys_enc->ctlstart_timeout);
 		}
 
 	}
@@ -1793,7 +1799,6 @@ struct sde_encoder_phys *sde_encoder_phys_cmd_init(
 	atomic_set(&phys_enc->pending_retire_fence_cnt, 0);
 	atomic_set(&cmd_enc->pending_rd_ptr_cnt, 0);
 	atomic_set(&cmd_enc->pending_vblank_cnt, 0);
-	atomic_set(&phys_enc->ctlstart_timeout, 0);
 	init_waitqueue_head(&phys_enc->pending_kickoff_wq);
 	init_waitqueue_head(&cmd_enc->pending_vblank_wq);
 	atomic_set(&cmd_enc->autorefresh.kickoff_cnt, 0);

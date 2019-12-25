@@ -134,8 +134,6 @@ static void sde_hw_setup_pp_split(struct sde_hw_mdp *mdp,
 	} else if (cfg->en && cfg->pp_split_slave != INTF_MAX) {
 		ppb_config |= (cfg->pp_split_slave - INTF_0 + 1) << 20;
 		ppb_config |= BIT(16); /* split enable */
-		/* overlap pixel width */
-		ppb_config |= ((cfg->overlap_pixel_width & 0x1F) << 24);
 		ppb_control = BIT(5); /* horz split*/
 	}
 
@@ -400,6 +398,8 @@ void sde_hw_reset_ubwc(struct sde_hw_mdp *mdp, struct sde_mdss_cfg *m)
 
 		if (IS_UBWC_30_SUPPORTED(m->ubwc_version))
 			reg |= BIT(10);
+		if (IS_UBWC_10_SUPPORTED(m->ubwc_version))
+			reg |= BIT(8);
 
 		SDE_REG_WRITE(&c, UBWC_STATIC, reg);
 	} else {

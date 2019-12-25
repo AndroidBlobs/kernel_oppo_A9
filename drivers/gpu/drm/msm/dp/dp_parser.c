@@ -225,8 +225,7 @@ static int dp_parser_pinctrl(struct dp_parser *parser)
 				pinctrl->pin, "mdss_dp_hpd_ctrl");
 		}
 
-		if (IS_ERR_OR_NULL(pinctrl->state_hpd_tlmm) ||
-				IS_ERR_OR_NULL(pinctrl->state_hpd_ctrl)) {
+		if (!pinctrl->state_hpd_tlmm || !pinctrl->state_hpd_ctrl) {
 			pinctrl->state_hpd_tlmm = NULL;
 			pinctrl->state_hpd_ctrl = NULL;
 			pr_debug("tlmm or ctrl pinctrl state does not exist\n");
@@ -713,12 +712,19 @@ static int dp_parser_catalog(struct dp_parser *parser)
 static int dp_parser_mst(struct dp_parser *parser)
 {
 	struct device *dev = &parser->pdev->dev;
+	int i;
 
 	parser->has_mst = of_property_read_bool(dev->of_node,
 			"qcom,mst-enable");
 	parser->has_mst_sideband = parser->has_mst;
 
 	pr_debug("mst parsing successful. mst:%d\n", parser->has_mst);
+
+	for (i = 0; i < MAX_DP_MST_STREAMS; i++) {
+		of_property_read_u32_index(dev->of_node,
+				"qcom,mst-fixed-topology-ports", i,
+				&parser->mst_fixed_port[i]);
+	}
 
 	return 0;
 }

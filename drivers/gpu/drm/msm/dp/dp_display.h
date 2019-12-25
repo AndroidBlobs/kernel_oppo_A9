@@ -108,9 +108,13 @@ struct dp_display {
 	int (*mst_connector_update_edid)(struct dp_display *dp_display,
 			struct drm_connector *connector,
 			struct edid *edid);
+	int (*mst_connector_update_link_info)(struct dp_display *dp_display,
+			struct drm_connector *connector);
 	int (*mst_get_connector_info)(struct dp_display *dp_display,
 			struct drm_connector *connector,
 			struct dp_mst_connector *mst_conn);
+	int (*mst_get_fixed_topology_port)(struct dp_display *dp_display,
+			u32 strm_id, u32 *port_num);
 	int (*get_mst_caps)(struct dp_display *dp_display,
 			struct dp_mst_caps *mst_caps);
 	int (*set_stream_info)(struct dp_display *dp_display, void *panel,
@@ -121,8 +125,6 @@ struct dp_display {
 			struct dp_display_mode *dp_mode);
 	int (*update_pps)(struct dp_display *dp_display,
 			struct drm_connector *connector, char *pps_cmd);
-	void (*wakeup_phy_layer)(struct dp_display *dp_display,
-			bool wakeup);
 };
 
 int dp_display_get_num_of_displays(void);

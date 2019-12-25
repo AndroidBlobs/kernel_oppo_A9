@@ -41,6 +41,17 @@
 #include "sde_power_handle.h"
 #include "sde_core_perf.h"
 #include "sde_trace.h"
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.Lcd.Stability, 2018-11-21
+ * Add for drm notifier for display connect
+*/
+#include <linux/msm_drm_notify.h>
+#include <linux/notifier.h>
+
+
+
+extern int msm_drm_notifier_call_chain(unsigned long val, void *v);
+#endif
 
 #define SDE_PSTATES_MAX (SDE_STAGE_MAX * 4)
 #define SDE_MULTIRECT_PLANE_MAX (SDE_STAGE_MAX * 2)
@@ -90,6 +101,9 @@ static struct sde_crtc_custom_events custom_events[] = {
 #define MAX_FPS_PERIOD_5_SECONDS	5000000
 #define MAX_FRAME_COUNT			1000
 #define MILI_TO_MICRO			1000
+
+/* Line padding ratio limit */
+#define MAX_VPADDING_RATIO		3
 
 static inline struct sde_kms *_sde_crtc_get_kms(struct drm_crtc *crtc)
 {
@@ -937,26 +951,6 @@ static bool sde_crtc_mode_fixup(struct drm_crtc *crtc,
 	return true;
 }
 
-static int _sde_crtc_get_ctlstart_timeout(struct drm_crtc *crtc)
-{
-	struct drm_encoder *encoder;
-	int rc = 0;
-
-	if (!crtc || !crtc->dev)
-		return 0;
-
-	list_for_each_entry(encoder,
-			&crtc->dev->mode_config.encoder_list, head) {
-		if (encoder->crtc != crtc)
-			continue;
-
-		if (sde_encoder_get_intf_mode(encoder) == INTF_MODE_CMD)
-			rc += sde_encoder_get_ctlstart_timeout_state(encoder);
-	}
-
-	return rc;
-}
-
 static void _sde_crtc_setup_blend_cfg(struct sde_crtc_mixer *mixer,
 	struct sde_plane_state *pstate, struct sde_format *format)
 {
@@ -1076,6 +1070,18 @@ static void _sde_crtc_setup_dim_layer_cfg(struct drm_crtc *crtc,
 			split_dim_layer.rect.y =
 					split_dim_layer.rect.y -
 						cstate->lm_roi[i].y;
+		}
+
+		/* update dim layer rect for panel stacking crtc */
+		if (cstate->padding_height) {
+			uint32_t padding_y, padding_start, padding_height;
+
+			sde_crtc_calc_vpadding_param(crtc->state,
+				split_dim_layer.rect.y, split_dim_layer.rect.h,
+				&padding_y, &padding_start, &padding_height);
+
+			split_dim_layer.rect.y = padding_y;
+			split_dim_layer.rect.h = padding_height;
 		}
 
 		SDE_EVT32_VERBOSE(DRMID(crtc),
@@ -1394,6 +1400,11 @@ static u32 _sde_crtc_get_displays_affected(struct drm_crtc *crtc,
 	u32 disp_bitmask = 0;
 	int i;
 
+	if (!crtc || !state) {
+		pr_err("Invalid crtc or state\n");
+		return 0;
+	}
+
 	sde_crtc = to_sde_crtc(crtc);
 	crtc_state = to_sde_crtc_state(state);
 
@@ -1618,6 +1629,84 @@ static int _sde_crtc_check_rois(struct drm_crtc *crtc,
 			return rc;
 	}
 
+	return 0;
+}
+
+static u32 _sde_crtc_calc_gcd(u32 a, u32 b)
+{
+	if (b == 0)
+		return a;
+
+	return _sde_crtc_calc_gcd(b, a % b);
+}
+
+static int _sde_crtc_check_panel_stacking(struct drm_crtc *crtc,
+		struct drm_crtc_state *state)
+{
+	struct sde_kms *kms;
+	struct sde_crtc *sde_crtc;
+	struct sde_crtc_state *sde_crtc_state;
+	struct drm_connector *conn;
+	struct msm_mode_info mode_info;
+	u32 gcd, m, n;
+	int rc;
+
+	kms = _sde_crtc_get_kms(crtc);
+	if (!kms || !kms->catalog) {
+		SDE_ERROR("invalid kms\n");
+		return -EINVAL;
+	}
+
+	if (!kms->catalog->has_line_insertion)
+		return 0;
+
+	sde_crtc = to_sde_crtc(crtc);
+	sde_crtc_state = to_sde_crtc_state(state);
+
+	/* panel stacking only support single connector */
+	if (sde_crtc_state->num_connectors != 1)
+		return 0;
+
+	conn = sde_crtc_state->connectors[0];
+	rc = sde_connector_get_mode_info(conn->state, &mode_info);
+	if (rc) {
+		SDE_ERROR("failed to get mode info\n");
+		return -EINVAL;
+	}
+
+	if (!mode_info.vpadding)
+		goto done;
+
+	if (mode_info.vpadding < state->mode.vdisplay) {
+		SDE_ERROR("padding height %d is less than vdisplay %d\n",
+			mode_info.vpadding, state->mode.vdisplay);
+		return -EINVAL;
+	}
+
+	/* skip calculation if already cached */
+	if (mode_info.vpadding == sde_crtc_state->padding_height)
+		return 0;
+
+	gcd = _sde_crtc_calc_gcd(mode_info.vpadding, state->mode.vdisplay);
+	if (!gcd) {
+		SDE_ERROR("zero gcd found for padding height %d %d\n",
+			mode_info.vpadding, state->mode.vdisplay);
+		return -EINVAL;
+	}
+
+	m = state->mode.vdisplay / gcd;
+	n = mode_info.vpadding / gcd - m;
+
+	if (m > MAX_VPADDING_RATIO || n > MAX_VPADDING_RATIO) {
+		SDE_ERROR("unsupported panel stacking pattern %d:%d", m, n);
+		return -EINVAL;
+	}
+
+	sde_crtc_state->padding_active = m;
+	sde_crtc_state->padding_dummy = n;
+
+done:
+	sde_crtc_state->padding_height = mode_info.vpadding;
 	return 0;
 }
 
@@ -3029,7 +3118,7 @@ static void _sde_crtc_set_dim_layer_v1(struct sde_crtc_state *cstate,
 		user_cfg = &dim_layer_v1.layer_cfg[i];
 
 		dim_layer[i].flags = user_cfg->flags;
-		dim_layer[i].stage = user_cfg->stage + SDE_STAGE_0;
+		dim_layer[i].stage = user_cfg->stage;
 
 		dim_layer[i].rect.x = user_cfg->rect.x1;
 		dim_layer[i].rect.y = user_cfg->rect.y1;
@@ -3635,13 +3724,7 @@ static void sde_crtc_atomic_begin(struct drm_crtc *crtc,
 	if (unlikely(!sde_crtc->num_mixers))
 		goto end;
 
-	if (_sde_crtc_get_ctlstart_timeout(crtc)) {
-		_sde_crtc_blend_setup(crtc, old_state, false);
-		SDE_ERROR("border fill only commit after ctlstart timeout\n");
-	} else {
-		_sde_crtc_blend_setup(crtc, old_state, true);
-	}
-
+	_sde_crtc_blend_setup(crtc, old_state, true);
 	_sde_crtc_dest_scaler_setup(crtc);
 
 	/* cancel the idle notify delayed work */
@@ -4893,7 +4976,7 @@ static void sde_crtc_enable(struct drm_crtc *crtc,
 
 /* no input validation - caller API has all the checks */
 static int _sde_crtc_excl_dim_layer_check(struct drm_crtc_state *state,
-		struct plane_state pstates[], int cnt)
+		struct plane_state pstates[], int cnt, bool base_layer_staged)
 {
 	struct sde_crtc_state *cstate = to_sde_crtc_state(state);
 	struct drm_display_mode *mode = &state->adjusted_mode;
@@ -4920,6 +5003,8 @@ static int _sde_crtc_excl_dim_layer_check(struct drm_crtc_state *state,
 					mode->vdisplay);
 			rc = -E2BIG;
 			goto end;
+		} else if (!base_layer_staged) {
+			cstate->dim_layer[i].stage += SDE_STAGE_0;
 		}
 	}
 
@@ -5040,9 +5125,12 @@ static int _sde_crtc_check_secure_state(struct drm_crtc *crtc,
 			int sec_stage = cnt ? pstates[0].sde_pstate->stage :
 						cstate->dim_layer[0].stage;
 
+			if (!sde_kms->catalog->has_base_layer)
+				sec_stage -= SDE_STAGE_0;
+
 			if ((!cnt && !cstate->num_dim_layers) ||
 				(sde_kms->catalog->sui_supported_blendstage
-						!= (sec_stage - SDE_STAGE_0))) {
+						!= sec_stage)) {
 				SDE_ERROR(
 				  "crtc%d: empty cnt%d/dim%d or bad stage%d\n",
 					DRMID(crtc), cnt,
@@ -5116,6 +5204,7 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 	struct sde_crtc *sde_crtc;
 	struct plane_state *pstates = NULL;
 	struct sde_crtc_state *cstate;
+	struct sde_kms *kms;
 
 	const struct drm_plane_state *pstate;
 	struct drm_plane *plane;
@@ -5140,6 +5229,12 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 
 	sde_crtc = to_sde_crtc(crtc);
 	cstate = to_sde_crtc_state(state);
+	kms = _sde_crtc_get_kms(crtc);
+
+	if (!kms || !kms->catalog) {
+		SDE_ERROR("Invalid kms\n");
+		return -EINVAL;
+	}
 
 	if (!state->enable || !state->active) {
 		SDE_DEBUG("crtc%d -> enable %d, active %d, skip atomic_check\n",
@@ -5228,7 +5323,7 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 		/* check dim layer stage with every plane */
 		for (i = 0; i < cstate->num_dim_layers; i++) {
 			if (cstate->dim_layer[i].stage
-					== (pstates[cnt].stage + SDE_STAGE_0)) {
+					== (pstates[cnt].stage)) {
 				SDE_ERROR(
 					"plane:%d/dim_layer:%i-same stage:%d\n",
 					plane->base.id, i,
@@ -5280,7 +5375,8 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 	/* assign mixer stages based on sorted zpos property */
 	sort(pstates, cnt, sizeof(pstates[0]), pstate_cmp, NULL);
 
-	rc = _sde_crtc_excl_dim_layer_check(state, pstates, cnt);
+	rc = _sde_crtc_excl_dim_layer_check(state, pstates, cnt,
+				kms->catalog->has_base_layer);
 	if (rc)
 		goto end;
 
@@ -5330,7 +5426,10 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 			right_zpos_cnt++;
 		}
 
-		pstates[i].sde_pstate->stage = z_pos + SDE_STAGE_0;
+		if (!kms->catalog->has_base_layer)
+			pstates[i].sde_pstate->stage = z_pos + SDE_STAGE_0;
+		else
+			pstates[i].sde_pstate->stage = z_pos;
 		SDE_DEBUG("%s: zpos %d", sde_crtc->name, z_pos);
 	}
 
@@ -5363,6 +5462,13 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 	rc = _sde_crtc_check_rois(crtc, state);
 	if (rc) {
 		SDE_ERROR("crtc%d failed roi check %d\n", crtc->base.id, rc);
+		goto end;
+	}
+
+	rc = _sde_crtc_check_panel_stacking(crtc, state);
+	if (rc) {
+		SDE_ERROR("crtc%d failed panel stacking check %d\n",
+				crtc->base.id, rc);
 		goto end;
 	}
 
@@ -5639,12 +5745,19 @@ static void sde_crtc_install_properties(struct drm_crtc *crtc,
 			catalog->perf.amortizable_threshold);
 	sde_kms_info_add_keyint(info, "min_prefill_lines",
 			catalog->perf.min_prefill_lines);
+	sde_kms_info_add_keyint(info, "num_mnoc_ports",
+			catalog->perf.num_mnoc_ports);
+	sde_kms_info_add_keyint(info, "axi_bus_width",
+			catalog->perf.axi_bus_width);
 	sde_kms_info_add_keyint(info, "sec_ui_blendstage",
 			catalog->sui_supported_blendstage);
 
 	if (catalog->ubwc_bw_calc_version)
 		sde_kms_info_add_keyint(info, "ubwc_bw_calc_ver",
 				catalog->ubwc_bw_calc_version);
+
+	sde_kms_info_add_keyint(info, "use_baselayer_for_stage",
+				catalog->has_base_layer);
 
 	msm_property_set_blob(&sde_crtc->property_info, &sde_crtc->blob_info,
 			info->data, SDE_KMS_INFO_DATALEN(info), CRTC_PROP_INFO);
@@ -6887,4 +7000,47 @@ void sde_crtc_update_cont_splash_settings(struct drm_crtc *crtc)
 	/* update core clk value for initial state with cont-splash */
 	sde_crtc = to_sde_crtc(crtc);
 	sde_crtc->cur_perf.core_clk_rate = kms->perf.max_core_clk_rate;
+}
+
+int sde_crtc_calc_vpadding_param(struct drm_crtc_state *state,
+		uint32_t crtc_y, uint32_t crtc_h, uint32_t *padding_y,
+		uint32_t *padding_start, uint32_t *padding_height)
+{
+	struct sde_kms *kms;
+	struct sde_crtc_state *cstate = to_sde_crtc_state(state);
+	u32 y_blocks, y_remain, y_start;
+	u32 h_start, h_blocks, h_end, h_total;
+	u32 m, n;
+
+	kms = _sde_crtc_get_kms(state->crtc);
+	if (!kms || !kms->catalog) {
+		SDE_ERROR("invalid kms\n");
+		return -EINVAL;
+	}
+
+	if (!kms->catalog->has_line_insertion)
+		return 0;
+
+	if (!cstate->padding_active) {
+		SDE_ERROR("zero padding active value\n");
+		return -EINVAL;
+	}
+
+	m = cstate->padding_active;
+	n = m + cstate->padding_dummy;
+	y_blocks = crtc_y / m;
+	y_remain = crtc_y - y_blocks * m;
+	y_start = y_remain + y_blocks * n;
+	h_start = m - y_remain;
+	h_blocks = (crtc_h - h_start) / m;
+	h_end = (crtc_h - h_start) - h_blocks * m;
+	if (h_end)
+		h_end += cstate->padding_dummy;
+	h_total = h_start + h_end + h_blocks * n;
+
+	*padding_y = y_start;
+	*padding_start = h_start;
+	*padding_height = h_total;
+
+	return 0;
 }

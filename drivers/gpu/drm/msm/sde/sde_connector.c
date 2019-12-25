@@ -26,6 +26,9 @@
 
 #define BL_NODE_NAME_SIZE 32
 
+extern int panel_which;
+extern int is_ktd3136;
+
 /* Autorefresh will occur after FRAME_CNT frames. Large values are unlikely */
 #define AUTOREFRESH_MAX_FRAME_CNT 6
 
@@ -84,8 +87,22 @@ static int sde_backlight_device_update_status(struct backlight_device *bd)
 
 	c_conn = bl_get_data(bd);
 	display = (struct dsi_display *) c_conn->display;
-	if (brightness > display->panel->bl_config.bl_max_level)
-		brightness = display->panel->bl_config.bl_max_level;
+
+	#ifdef VENDOR_EDIT
+	//liwei.a@PSW.MM.Display.LCD.Stability, 2019/07/02, add for change current of max brightness.
+	if (is_ktd3136 < 0) {
+		if (panel_which == 1) {
+			display->panel->bl_config.bl_max_level = 1940;
+		} else if (panel_which == 3) {
+			display->panel->bl_config.bl_max_level = 1980;
+		} else if (panel_which == 4) {
+			display->panel->bl_config.bl_max_level = 1980;
+		}
+	} else {
+		if (brightness > display->panel->bl_config.bl_max_level)
+			brightness = display->panel->bl_config.bl_max_level;
+	}
+	#endif
 
 	/* map UI brightness into driver backlight level with rounding */
 	bl_lvl = mult_frac(brightness, display->panel->bl_config.bl_max_level,
@@ -146,7 +163,7 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	display = (struct dsi_display *) c_conn->display;
 	bl_config = &display->panel->bl_config;
 	props.max_brightness = bl_config->brightness_max_level;
-	props.brightness = bl_config->brightness_max_level;
+	props.brightness = bl_config->brightness_default_level;
 	snprintf(bl_node_name, BL_NODE_NAME_SIZE, "panel%u-backlight",
 							display_count);
 	c_conn->bl_device = backlight_device_register(bl_node_name, dev->dev,
@@ -516,7 +533,13 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 {
 	struct dsi_display *dsi_display;
 	struct dsi_backlight_config *bl_config;
+
 	int rc = 0;
+
+#ifdef VENDOR_EDIT
+/*Gou shengjun@PSW.MM.Display.LCD.Stable,2019-03-7 fix backlight race problem */
+	struct backlight_device *bd;
+#endif /* VENDOR_EDIT */
 
 	if (!c_conn) {
 		SDE_ERROR("Invalid params sde_connector null\n");
@@ -531,11 +554,26 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 		return -EINVAL;
 	}
 
+#ifdef VENDOR_EDIT
+/*Gou shengjun@PSW.MM.Display.LCD.Stable,2019-03-7 fix backlight race problem */
+	bd = c_conn->bl_device;
+	if (!bd) {
+		SDE_ERROR("Invalid params backlight_device null\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&bd->update_lock);
+#endif /* VENDOR_EDIT */
+
 	bl_config = &dsi_display->panel->bl_config;
 
 	if (dsi_display->panel->bl_config.bl_update ==
 		BL_UPDATE_DELAY_UNTIL_FIRST_FRAME && !c_conn->allow_bl_update) {
 		c_conn->unset_bl_level = bl_config->bl_level;
+#ifdef VENDOR_EDIT
+/*Gou shengjun@PSW.MM.Display.LCD.Stable,2019-03-7 fix backlight race problem */
+		mutex_unlock(&bd->update_lock);
+#endif /* VENDOR_EDIT */
 		return 0;
 	}
 
@@ -558,6 +596,11 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 	rc = c_conn->ops.set_backlight(&c_conn->base,
 			dsi_display, bl_config->bl_level);
 	c_conn->unset_bl_level = 0;
+
+#ifdef VENDOR_EDIT
+/*Gou shengjun@PSW.MM.Display.LCD.Stable,2019-03-7 fix backlight race problem */
+	mutex_unlock(&bd->update_lock);
+#endif /* VENDOR_EDIT */
 
 	return rc;
 }
@@ -729,6 +772,10 @@ void sde_connector_helper_bridge_enable(struct drm_connector *connector)
 	if (c_conn->bl_device) {
 		c_conn->bl_device->props.power = FB_BLANK_UNBLANK;
 		c_conn->bl_device->props.state &= ~BL_CORE_FBBLANK;
+		#ifdef VENDOR_EDIT
+		//liwei.a@PSW.MM.Display.LCD.Stability, 2019/05/25, add for delay 3 frames to light backlight
+		usleep_range(50*1000, 51*1000);
+		#endif
 		backlight_update_status(c_conn->bl_device);
 	}
 	c_conn->panel_dead = false;
@@ -1325,14 +1372,14 @@ void sde_connector_commit_reset(struct drm_connector *connector, ktime_t ts)
 static void sde_connector_update_hdr_props(struct drm_connector *connector)
 {
 	struct sde_connector *c_conn = to_sde_connector(connector);
-	struct drm_msm_ext_hdr_properties hdr = {0};
-
-	hdr.hdr_metadata_type_one = connector->hdr_metadata_type_one ? 1 : 0;
-	hdr.hdr_supported = connector->hdr_supported ? 1 : 0;
-	hdr.hdr_eotf = connector->hdr_eotf;
-	hdr.hdr_max_luminance = connector->hdr_max_luminance;
-	hdr.hdr_avg_luminance = connector->hdr_avg_luminance;
-	hdr.hdr_min_luminance = connector->hdr_min_luminance;
+	struct drm_msm_ext_hdr_properties hdr = {
+		connector->hdr_metadata_type_one,
+		connector->hdr_supported,
+		connector->hdr_eotf,
+		connector->hdr_max_luminance,
+		connector->hdr_avg_luminance,
+		connector->hdr_min_luminance,
+	};
 
 	msm_property_set_blob(&c_conn->property_info, &c_conn->blob_ext_hdr,
 			&hdr, sizeof(hdr), CONNECTOR_PROP_EXT_HDR_INFO);
