@@ -20,6 +20,12 @@
 #include <linux/delay.h>
 #include "ext4_jbd2.h"
 #include "ext4.h"
+#ifdef VENDOR_EDIT
+/* Ji.Xu@BSP.Power.Basic 2019/04/03
+ * System file cannot be chattr
+ */
+#include <soc/oppo/boot_mode.h>
+#endif /*VENDOR_EDIT*/
 #include <linux/fsmap.h>
 #include "fsmap.h"
 #include <trace/events/ext4.h>
@@ -625,6 +631,30 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return put_user(flags, (int __user *) arg);
 	case EXT4_IOC_SETFLAGS: {
 		int err;
+
+#if defined(VENDOR_EDIT) && defined(OPPO_DISALLOW_KEY_INTERFACES)
+/* Ji.Xu@BSP.Power.Basic 2019/04/03
+ * System file cannot be chattr
+ */
+		if (get_boot_mode() == MSM_BOOT_MODE__NORMAL) {
+			char *fpath, *pathbuf;
+			pathbuf = kmalloc(PATH_MAX, GFP_KERNEL);
+			if (!pathbuf)
+				return -ENOMEM;
+			fpath = file_path(filp, pathbuf, PATH_MAX);
+			if (IS_ERR(fpath)) {
+				kfree(pathbuf);
+				return -EFAULT;
+			}
+			if (!strncmp(fpath, "/system", 7) || !strncmp(fpath, "/vendor", 7)) {
+				printk(KERN_ERR "[OPPO]IOC_SETFLAGS on file %s \
+is not permitted\n", fpath);
+				kfree(pathbuf);
+				return -EPERM;
+			}
+			kfree(pathbuf);
+		}
+#endif /* VENDOR_EDIT */
 
 		if (!inode_owner_or_capable(inode))
 			return -EACCES;
