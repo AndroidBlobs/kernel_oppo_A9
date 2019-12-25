@@ -102,9 +102,6 @@ void dump_backtrace(struct pt_regs *regs, struct task_struct *tsk)
 {
 	struct stackframe frame;
 	int skip;
-	long cur_state = 0;
-	unsigned long cur_sp = 0;
-	unsigned long cur_fp = 0;
 
 	pr_debug("%s(regs = %p tsk = %p)\n", __func__, regs, tsk);
 
@@ -123,9 +120,6 @@ void dump_backtrace(struct pt_regs *regs, struct task_struct *tsk)
 		 */
 		frame.fp = thread_saved_fp(tsk);
 		frame.pc = thread_saved_pc(tsk);
-		cur_state = tsk->state;
-		cur_sp = thread_saved_sp(tsk);
-		cur_fp = frame.fp;
 	}
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	frame.graph = tsk->curr_ret_stack;
@@ -134,23 +128,6 @@ void dump_backtrace(struct pt_regs *regs, struct task_struct *tsk)
 	skip = !!regs;
 	printk("Call trace:\n");
 	do {
-		if (tsk != current && (cur_state != tsk->state
-			/*
-			 * We would not be printing backtrace for the task
-			 * that has changed state from uninterruptible to
-			 * running before hitting the do-while loop but after
-			 * saving the current state. If task is in running
-			 * state before saving the state, then we may print
-			 * wrong call trace or end up in infinite while loop
-			 * if *(fp) and *(fp+8) are same. While the situation
-			 * will stop print when that task schedule out.
-			 */
-			|| cur_sp != thread_saved_sp(tsk)
-			|| cur_fp != thread_saved_fp(tsk))) {
-			printk("The task:%s had been rescheduled!\n",
-				tsk->comm);
-			break;
-		}
 		/* skip until specified stack frame */
 		if (!skip) {
 			dump_backtrace_entry(frame.pc);
@@ -598,15 +575,46 @@ const char *esr_get_class_string(u32 esr)
  */
 asmlinkage void bad_mode(struct pt_regs *regs, int reason, unsigned int esr)
 {
+#ifdef VENDOR_EDIT
+/*Yixue.Ge@bsp.drv 20180118 after this  21ffe52cc23f29b9fddb2bb063340d1cda9cc57e commit
+ *El0 call bad_mode will make sys oops.such as el0_fiq_invalid el0_error_invalid el0_fiq_invalid_compat
+ *el0_error_invalid_compat .these four user exception will make system creash. but before 
+ *21ffe52cc23f29b9fddb2bb063340d1cda9cc57e commit.system just kill user process instead of oops
+ */
+	siginfo_t info;
+	void __user *pc = (void __user *)instruction_pointer(regs);
+#endif
 	console_verbose();
 
 	pr_crit("Bad mode in %s handler detected on CPU%d, code 0x%08x -- %s\n",
 		handler[reason], smp_processor_id(), esr,
 		esr_get_class_string(esr));
+#ifdef VENDOR_EDIT
+/*Yixue.Ge@bsp.drv 20180118 after this	21ffe52cc23f29b9fddb2bb063340d1cda9cc57e commit
+*El0 call bad_mode will make sys oops.such as el0_fiq_invalid el0_error_invalid el0_fiq_invalid_compat
+*el0_error_invalid_compat .these four user exception will make system creash. but before 
+*21ffe52cc23f29b9fddb2bb063340d1cda9cc57e commit.system just kill user process instead of oops
+*/
+	__show_regs(regs);
 
+	info.si_signo = SIGILL;
+	info.si_errno = 0;
+	info.si_code  = ILL_ILLOPC;
+	info.si_addr  = pc;
+#endif
+
+#ifdef VENDOR_EDIT
+/*Yixue.Ge@bsp.drv 20180118 after this	21ffe52cc23f29b9fddb2bb063340d1cda9cc57e commit
+ *El0 call bad_mode will make sys oops.such as el0_fiq_invalid el0_error_invalid el0_fiq_invalid_compat
+ *el0_error_invalid_compat .these four user exception will make system creash. but before 
+ *21ffe52cc23f29b9fddb2bb063340d1cda9cc57e commit.system just kill user process instead of oops
+ */
+	arm64_notify_die("Oops - bad mode", regs, &info, 0);
+#else
 	die("Oops - bad mode", regs, 0);
 	local_irq_disable();
 	panic("bad mode");
+#endif
 }
 
 /*
