@@ -45,6 +45,7 @@
 #define DWC3_EP0_SETUP_SIZE	512
 #define DWC3_ENDPOINTS_NUM	32
 #define DWC3_XHCI_RESOURCES_NUM	2
+#define MAX_ERROR_RECOVERY_TRIES	3
 
 #define DWC3_SCRATCHBUF_SIZE	4096	/* each buffer is assumed to be 4KiB */
 #define DWC3_EVENT_BUFFERS_SIZE	4096
@@ -1157,6 +1158,10 @@ struct dwc3 {
 	unsigned		tx_de_emphasis_quirk:1;
 	unsigned		ssp_u3_u0_quirk:1;
 	unsigned		tx_de_emphasis:2;
+#ifdef VENDOR_EDIT
+  /* zhangkun@BSP.CHG.Basic, 2019/04/26,  add for OTG sw */
+	unsigned		is_drd:1;
+#endif
 	unsigned		err_evt_seen:1;
 	unsigned		disable_clk_gating:1;
 	unsigned		enable_bus_suspend:1;
@@ -1204,6 +1209,7 @@ struct dwc3 {
 	 * connected devices on PM resume.
 	 */
 	bool			host_poweroff_in_pm_suspend;
+	int			retries_on_error;
 };
 
 #define work_to_dwc(w)		(container_of((w), struct dwc3, drd_work))

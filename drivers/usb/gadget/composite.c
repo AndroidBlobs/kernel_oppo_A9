@@ -533,8 +533,14 @@ int usb_func_ep_queue(struct usb_function *func, struct usb_ep *ep,
 		} else if (ret < 0 && ret != -ENOTSUPP) {
 			pr_err("Failed to wake function %s from suspend state. ret=%d.\n",
 				func->name ? func->name : "", ret);
+		} else {
+			/*
+			 * Return -EAGAIN to queue the request from
+			 * function driver wakeup function.
+			 */
+			ret = -EAGAIN;
+			goto done;
 		}
-		goto done;
 	}
 
 	if (!func->func_is_suspended)
@@ -1743,7 +1749,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 					cdev->desc.bcdUSB = cpu_to_le16(0x0320);
 					cdev->desc.bMaxPacketSize0 = 9;
 				} else {
-					cdev->desc.bcdUSB = cpu_to_le16(0x0210);
+					cdev->desc.bcdUSB = cpu_to_le16(0x0200);
 				}
 			} else {
 				if (gadget->lpm_capable)

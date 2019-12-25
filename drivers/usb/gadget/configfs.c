@@ -15,7 +15,7 @@
 #include <linux/usb/ch9.h>
 
 #ifdef CONFIG_USB_F_NCM
-#include <function/u_ncm.h>
+#include "function/u_ncm.h"
 #endif
 
 #ifdef CONFIG_USB_CONFIGFS_F_ACC
@@ -329,6 +329,7 @@ static ssize_t gadget_dev_desc_UDC_store(struct config_item *item,
 			gi->composite.gadget_driver.udc_name = NULL;
 			goto err;
 		}
+		schedule_work(&gi->work);
 	}
 	mutex_unlock(&gi->lock);
 	return len;
