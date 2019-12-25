@@ -437,6 +437,7 @@ static inline void cpufreq_resume(void) {}
 /* Policy Notifiers  */
 #define CPUFREQ_ADJUST			(0)
 #define CPUFREQ_NOTIFY			(1)
+#define CPUFREQ_INCOMPATIBLE	(6)
 
 #ifdef CONFIG_CPU_FREQ
 int cpufreq_register_notifier(struct notifier_block *nb, unsigned int list);
@@ -546,6 +547,19 @@ static inline void cpufreq_policy_apply_limits(struct cpufreq_policy *policy)
 		__cpufreq_driver_target(policy, policy->max, CPUFREQ_RELATION_H);
 	else if (policy->min > policy->cur)
 		__cpufreq_driver_target(policy, policy->min, CPUFREQ_RELATION_L);
+}
+
+static inline unsigned int
+cpufreq_policy_apply_limits_fast(struct cpufreq_policy *policy)
+{
+	unsigned int ret = 0;
+
+	if (policy->max < policy->cur)
+		ret = cpufreq_driver_fast_switch(policy, policy->max);
+	else if (policy->min > policy->cur)
+		ret = cpufreq_driver_fast_switch(policy, policy->min);
+
+	return ret;
 }
 
 /* Governor attribute set */
@@ -916,6 +930,10 @@ static inline bool policy_has_boost_freq(struct cpufreq_policy *policy)
 	return false;
 }
 #endif
+
+#ifdef VENDOR_EDIT
+struct list_head *get_cpufreq_policy_list(void);
+#endif /* VENDOR_EDIT */
 
 extern void arch_freq_prepare_all(void);
 extern unsigned int arch_freq_get_on_cpu(int cpu);

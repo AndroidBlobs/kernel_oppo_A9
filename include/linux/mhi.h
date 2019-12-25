@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -113,6 +113,9 @@ enum mhi_dev_state {
 	MHI_STATE_SYS_ERR  = 0xFF,
 	MHI_STATE_MAX,
 };
+
+#define MHI_VOTE_BUS BIT(0) /* do not disable the bus */
+#define MHI_VOTE_DEVICE BIT(1) /* prevent mhi device from entering lpm */
 
 /**
  * struct image_info - firmware and rddm table table
@@ -346,18 +349,23 @@ struct mhi_result {
 
 /**
  * struct mhi_buf - Describes the buffer
+ * @page: buffer as a page
  * @buf: cpu address for the buffer
  * @phys_addr: physical address of the buffer
  * @dma_addr: iommu address for the buffer
+ * @skb: skb of ip packet
  * @len: # of bytes
  * @name: Buffer label, for offload channel configurations name must be:
  * ECA - Event context array data
  * CCA - Channel context array data
  */
 struct mhi_buf {
+	struct list_head node;
+	struct page *page;
 	void *buf;
 	phys_addr_t phys_addr;
 	dma_addr_t dma_addr;
+	struct sk_buff *skb;
 	size_t len;
 	const char *name; /* ECA, CCA */
 };
@@ -458,22 +466,25 @@ int mhi_device_configure(struct mhi_device *mhi_div,
  * Only disables lpm, does not immediately exit low power mode
  * if controller already in a low power mode
  * @mhi_dev: Device associated with the channels
+ * @vote: requested vote (for future usage)
  */
-void mhi_device_get(struct mhi_device *mhi_dev);
+void mhi_device_get(struct mhi_device *mhi_dev, int vote);
 
 /**
  * mhi_device_get_sync - disable all low power modes
  * Synchronously disable all low power, exit low power mode if
  * controller already in a low power state
  * @mhi_dev: Device associated with the channels
+ * @vote: requested vote (for future usage)
  */
-int mhi_device_get_sync(struct mhi_device *mhi_dev);
+int mhi_device_get_sync(struct mhi_device *mhi_dev, int vote);
 
 /**
  * mhi_device_put - re-enable low power modes
  * @mhi_dev: Device associated with the channels
+ * @vote: requested vote (for future usage)
  */
-void mhi_device_put(struct mhi_device *mhi_dev);
+void mhi_device_put(struct mhi_device *mhi_dev, int vote);
 
 /**
  * mhi_prepare_for_transfer - setup channel for data transfer
@@ -641,6 +652,12 @@ static inline bool mhi_is_active(struct mhi_device *mhi_dev)
 	return (mhi_cntrl->dev_state >= MHI_STATE_M0 &&
 		mhi_cntrl->dev_state <= MHI_STATE_M3);
 }
+
+/**
+ * mhi_debug_reg_dump - dump MHI registers for debug purpose
+ * @mhi_cntrl: MHI controller
+ */
+void mhi_debug_reg_dump(struct mhi_controller *mhi_cntrl);
 
 #ifndef CONFIG_ARCH_QCOM
 

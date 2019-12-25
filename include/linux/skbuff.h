@@ -693,7 +693,6 @@ struct sk_buff {
 	 * first. This is owned by whoever has the skb queued ATM.
 	 */
 	char			cb[48] __aligned(8);
-
 	unsigned long		_skb_refdst;
 	void			(*destructor)(struct sk_buff *skb);
 #ifdef CONFIG_XFRM
@@ -970,6 +969,7 @@ void skb_tx_error(struct sk_buff *skb);
 void consume_skb(struct sk_buff *skb);
 void __consume_stateless_skb(struct sk_buff *skb);
 void  __kfree_skb(struct sk_buff *skb);
+
 extern struct kmem_cache *skbuff_head_cache;
 
 void kfree_skb_partial(struct sk_buff *skb, bool head_stolen);
@@ -1294,6 +1294,22 @@ static inline void skb_zcopy_set(struct sk_buff *skb, struct ubuf_info *uarg)
 	}
 }
 
+static inline void skb_zcopy_set_nouarg(struct sk_buff *skb, void *val)
+{
+	skb_shinfo(skb)->destructor_arg = (void *)((uintptr_t) val | 0x1UL);
+	skb_shinfo(skb)->tx_flags |= SKBTX_ZEROCOPY_FRAG;
+}
+
+static inline bool skb_zcopy_is_nouarg(struct sk_buff *skb)
+{
+	return (uintptr_t) skb_shinfo(skb)->destructor_arg & 0x1UL;
+}
+
+static inline void *skb_zcopy_get_nouarg(struct sk_buff *skb)
+{
+	return (void *)((uintptr_t) skb_shinfo(skb)->destructor_arg & ~0x1UL);
+}
+
 /* Release a reference on a zerocopy structure */
 static inline void skb_zcopy_clear(struct sk_buff *skb, bool zerocopy)
 {
@@ -1303,7 +1319,7 @@ static inline void skb_zcopy_clear(struct sk_buff *skb, bool zerocopy)
 		if (uarg->callback == sock_zerocopy_callback) {
 			uarg->zerocopy = uarg->zerocopy && zerocopy;
 			sock_zerocopy_put(uarg);
-		} else {
+		} else if (!skb_zcopy_is_nouarg(skb)) {
 			uarg->callback(uarg, zerocopy);
 		}
 
@@ -3153,6 +3169,7 @@ int pskb_trim_rcsum_slow(struct sk_buff *skb, unsigned int len);
  *
  *	This is exactly the same as pskb_trim except that it ensures the
  *	checksum of received packets are still valid after the operation.
+ *	It can change skb pointers.
  */
 
 static inline int pskb_trim_rcsum(struct sk_buff *skb, unsigned int len)
@@ -3815,7 +3832,7 @@ static inline void __nf_copy(struct sk_buff *dst, const struct sk_buff *src,
 	nf_conntrack_get(skb_nfct(src));
 #endif
 #if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
-	dst->nf_bridge  = src->nf_bridge;
+	dst->nf_bridge = src->nf_bridge;
 	nf_bridge_get(src->nf_bridge);
 #endif
 #if IS_ENABLED(CONFIG_NETFILTER_XT_TARGET_TRACE) || defined(CONFIG_NF_TABLES)

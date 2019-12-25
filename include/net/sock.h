@@ -184,6 +184,11 @@ struct sock_common {
 	};
 	struct proto		*skc_prot;
 	possible_net_t		skc_net;
+#ifdef VENDOR_EDIT
+//Jiemin.Zhu@PSW.Android.OppoFeature.TrafficMonitor, 2018/06/28, Add for net comsuption statistics for
+//process which use the same uid
+	char skc_cmdline[TASK_COMM_LEN];
+#endif /* VENDOR_EDIT */
 
 #if IS_ENABLED(CONFIG_IPV6)
 	struct in6_addr		skc_v6_daddr;
@@ -292,6 +297,7 @@ struct sock_common {
   *	@sk_filter: socket filtering instructions
   *	@sk_timer: sock cleanup timer
   *	@sk_stamp: time stamp of last packet received
+  *	@sk_stamp_seq: lock for accessing sk_stamp on 32 bit architectures only
   *	@sk_tsflags: SO_TIMESTAMPING socket options
   *	@sk_tskey: counter to disambiguate concurrent tstamp requests
   *	@sk_zckey: counter to order MSG_ZEROCOPY notifications
@@ -350,7 +356,11 @@ struct sock {
 #define sk_incoming_cpu		__sk_common.skc_incoming_cpu
 #define sk_flags		__sk_common.skc_flags
 #define sk_rxhash		__sk_common.skc_rxhash
-
+#ifdef VENDOR_EDIT
+//Jiemin.Zhu@PSW.Android.OppoFeature.TrafficMonitor, 2018/06/28, Add for net comsuption statistics for
+//process which use the same uid
+#define sk_cmdline		__sk_common.skc_cmdline
+#endif /* VENDOR_EDIT */
 	socket_lock_t		sk_lock;
 	atomic_t		sk_drops;
 	int			sk_rcvlowat;
@@ -458,6 +468,9 @@ struct sock {
 	const struct cred	*sk_peer_cred;
 	long			sk_rcvtimeo;
 	ktime_t			sk_stamp;
+#if BITS_PER_LONG==32
+	seqlock_t		sk_stamp_seq;
+#endif
 	u16			sk_tsflags;
 	u8			sk_shutdown;
 	u32			sk_tskey;
@@ -1453,6 +1466,7 @@ static inline void lock_sock(struct sock *sk)
 	lock_sock_nested(sk, 0);
 }
 
+void __release_sock(struct sock *sk);
 void release_sock(struct sock *sk);
 
 /* BH context may only use the following locking interface. */
@@ -1820,6 +1834,10 @@ static inline void sk_dst_confirm(struct sock *sk)
 
 static inline void sock_confirm_neigh(struct sk_buff *skb, struct neighbour *n)
 {
+    #ifndef VENDOR_EDIT
+	//Wei.Wang@PSW.CN.WiFi.Network.internet.1357567, 2018/04/27,
+	//Remove for [1357567],some AP doesn't send arp when it needs to send data to DUT
+	//We remove this code to send arp more frequently to notify our mac to AP
 	if (skb_get_dst_pending_confirm(skb)) {
 		struct sock *sk = skb->sk;
 		unsigned long now = jiffies;
@@ -1830,6 +1848,7 @@ static inline void sock_confirm_neigh(struct sk_buff *skb, struct neighbour *n)
 		if (sk && sk->sk_dst_pending_confirm)
 			sk->sk_dst_pending_confirm = 0;
 	}
+    #endif /* VENDOR_EDIT */
 }
 
 bool sk_mc_loop(struct sock *sk);
@@ -2201,6 +2220,34 @@ static inline void sk_drops_add(struct sock *sk, const struct sk_buff *skb)
 	atomic_add(segs, &sk->sk_drops);
 }
 
+static inline ktime_t sock_read_timestamp(struct sock *sk)
+{
+#if BITS_PER_LONG==32
+	unsigned int seq;
+	ktime_t kt;
+
+	do {
+		seq = read_seqbegin(&sk->sk_stamp_seq);
+		kt = sk->sk_stamp;
+	} while (read_seqretry(&sk->sk_stamp_seq, seq));
+
+	return kt;
+#else
+	return sk->sk_stamp;
+#endif
+}
+
+static inline void sock_write_timestamp(struct sock *sk, ktime_t kt)
+{
+#if BITS_PER_LONG==32
+	write_seqlock(&sk->sk_stamp_seq);
+	sk->sk_stamp = kt;
+	write_sequnlock(&sk->sk_stamp_seq);
+#else
+	sk->sk_stamp = kt;
+#endif
+}
+
 void __sock_recv_timestamp(struct msghdr *msg, struct sock *sk,
 			   struct sk_buff *skb);
 void __sock_recv_wifi_status(struct msghdr *msg, struct sock *sk,
@@ -2225,7 +2272,7 @@ sock_recv_timestamp(struct msghdr *msg, struct sock *sk, struct sk_buff *skb)
 	     (sk->sk_tsflags & SOF_TIMESTAMPING_RAW_HARDWARE)))
 		__sock_recv_timestamp(msg, sk, skb);
 	else
-		sk->sk_stamp = kt;
+		sock_write_timestamp(sk, kt);
 
 	if (sock_flag(sk, SOCK_WIFI_STATUS) && skb->wifi_acked_valid)
 		__sock_recv_wifi_status(msg, sk, skb);
@@ -2246,9 +2293,9 @@ static inline void sock_recv_ts_and_drops(struct msghdr *msg, struct sock *sk,
 	if (sk->sk_flags & FLAGS_TS_OR_DROPS || sk->sk_tsflags & TSFLAGS_ANY)
 		__sock_recv_ts_and_drops(msg, sk, skb);
 	else if (unlikely(sock_flag(sk, SOCK_TIMESTAMP)))
-		sk->sk_stamp = skb->tstamp;
+		sock_write_timestamp(sk, skb->tstamp);
 	else if (unlikely(sk->sk_stamp == SK_DEFAULT_STAMP))
-		sk->sk_stamp = 0;
+		sock_write_timestamp(sk, 0);
 }
 
 void __sock_tx_timestamp(__u16 tsflags, __u8 *tx_flags);

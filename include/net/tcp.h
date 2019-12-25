@@ -288,7 +288,16 @@ extern int sysctl_tcp_use_userconfig;
 
 extern struct percpu_counter tcp_sockets_allocated;
 extern unsigned long tcp_memory_pressure;
-
+#ifdef VENDOR_EDIT
+//Ming.Liu@PSW.CN.WiFi.Network.quality.1065762, 2016/10/09,
+//add for: [monitor tcp info]
+extern int sysctl_tcp_info_print;
+#endif /* VENDOR_EDIT */
+#ifdef VENDOR_EDIT
+//Mengqing.Zhao@PSW.CN.WiFi.Network.internet.1394484, 2019/04/02,
+//add for: When find TCP SYN-ACK Timestamp value error, just do not use Timestamp
+extern int sysctl_tcp_ts_control[2];
+#endif /* VENDOR_EDIT */
 /* optimized version of sk_under_memory_pressure() for TCP sockets */
 static inline bool tcp_under_memory_pressure(const struct sock *sk)
 {
@@ -1639,7 +1648,6 @@ static inline void tcp_write_queue_purge(struct sock *sk)
 	tcp_clear_all_retrans_hints(tcp_sk(sk));
 	tcp_init_send_head(sk);
 	tcp_sk(sk)->packets_out = 0;
-	inet_csk(sk)->icsk_backoff = 0;
 }
 
 static inline struct sk_buff *tcp_write_queue_head(const struct sock *sk)
